@@ -30,7 +30,9 @@
 
 #include "iavf.h"
 #include "iavf_rxtx.h"
+#ifdef RTE_LIB_SECURITY
 #include "iavf_ipsec_crypto.h"
+#endif
 #include "rte_pmd_iavf.h"
 
 #define GRE_CHECKSUM_PRESENT	0x8000
@@ -853,10 +855,11 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->tx_deferred_start = tx_conf->tx_deferred_start;
 	txq->vsi = vsi;
 
+#ifdef RTE_LIB_SECURITY
 	if (iavf_ipsec_crypto_supported(adapter))
 		txq->ipsec_crypto_pkt_md_offset =
 			iavf_security_get_pkt_md_offset(adapter);
-
+#endif
 	/* Allocate software ring */
 	txq->sw_ring =
 		rte_zmalloc_socket("iavf tx sw ring",
@@ -2448,7 +2451,7 @@ iavf_fill_ctx_desc_cmd_field(volatile uint64_t *field, struct rte_mbuf *m,
 
 	*field |= cmd;
 }
-
+#ifdef RTE_LIB_SECURITY
 static inline void
 iavf_fill_ctx_desc_ipsec_field(volatile uint64_t *field,
 	struct iavf_ipsec_crypto_pkt_metadata *ipsec_md)
@@ -2459,7 +2462,7 @@ iavf_fill_ctx_desc_ipsec_field(volatile uint64_t *field,
 
 	*field |= ipsec_field;
 }
-
+#endif
 
 static inline void
 iavf_fill_ctx_desc_tunnelling_field(volatile uint64_t *qw0,
@@ -2538,19 +2541,27 @@ iavf_fill_ctx_desc_tunnelling_field(volatile uint64_t *qw0,
 
 static inline uint16_t
 iavf_fill_ctx_desc_segmentation_field(volatile uint64_t *field,
-	struct rte_mbuf *m, struct iavf_ipsec_crypto_pkt_metadata *ipsec_md)
+	struct rte_mbuf *m
+#ifdef RTE_LIB_SECURITY
+	, struct iavf_ipsec_crypto_pkt_metadata *ipsec_md
+#endif
+	)
 {
 	uint64_t segmentation_field = 0;
 	uint64_t total_length = 0;
 
+#ifdef RTE_LIB_SECURITY
 	if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) {
 		total_length = ipsec_md->l4_payload_len;
 	} else {
+#endif
 		total_length = m->pkt_len - (m->l2_len + m->l3_len + m->l4_len);
 
 		if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
 			total_length -= m->outer_l3_len + m->outer_l2_len;
+#ifdef RTE_LIB_SECURITY
 	}
+#endif
 
 #ifdef RTE_ETHDEV_DEBUG_TX
 	if (!m->l4_len || !m->tso_segsz)
@@ -2579,7 +2590,10 @@ struct iavf_tx_context_desc_qws {
 
 static inline void
 iavf_fill_context_desc(volatile struct iavf_tx_context_desc *desc,
-	struct rte_mbuf *m, struct iavf_ipsec_crypto_pkt_metadata *ipsec_md,
+                      struct rte_mbuf *m,
+#ifdef RTE_LIB_SECURITY
+                      struct iavf_ipsec_crypto_pkt_metadata *ipsec_md,
+#endif
 	uint16_t *tlen, uint8_t vlan_flag)
 {
 	volatile struct iavf_tx_context_desc_qws *desc_qws =
@@ -2592,13 +2606,18 @@ iavf_fill_context_desc(volatile struct iavf_tx_context_desc *desc,
 
 	/* fill segmentation field */
 	if (m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG)) {
+#ifdef RTE_LIB_SECURITY
 		/* fill IPsec field */
 		if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)
 			iavf_fill_ctx_desc_ipsec_field(&desc_qws->qw1,
 				ipsec_md);
-
+#endif
 		*tlen = iavf_fill_ctx_desc_segmentation_field(&desc_qws->qw1,
-				m, ipsec_md);
+				                                      m
+#ifdef RTE_LIB_SECURITY
+                                                      ,ipsec_md
+#endif
+                                                      );
 	}
 
 	/* fill tunnelling field */
@@ -2614,7 +2633,7 @@ iavf_fill_context_desc(volatile struct iavf_tx_context_desc *desc,
 		desc->l2tag2 = m->vlan_tci;
 }
 
-
+#ifdef RTE_LIB_SECURITY
 static inline void
 iavf_fill_ipsec_desc(volatile struct iavf_tx_ipsec_desc *desc,
 	const struct iavf_ipsec_crypto_pkt_metadata *md, uint16_t *ipsec_len)
@@ -2646,6 +2665,7 @@ iavf_fill_ipsec_desc(volatile struct iavf_tx_ipsec_desc *desc,
 			(md->ol_flags & IAVF_IPSEC_CRYPTO_OL_FLAGS_NATT ?
 			sizeof(struct rte_udp_hdr) : 0);
 }
+#endif
 
 static inline void
 iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
@@ -2817,13 +2837,13 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		mb = tx_pkts[idx];
 
 		RTE_MBUF_PREFETCH_TO_FREE(txe->mbuf);
-
+#ifdef RTE_LIB_SECURITY
 		/**
 		 * Get metadata for ipsec crypto from mbuf dynamic fields if
 		 * security offload is specified.
 		 */
 		ipsec_md = iavf_ipsec_crypto_get_pkt_metadata(txq, mb);
-
+#endif
 		nb_desc_data = mb->nb_segs;
 		nb_desc_ctx =
 			iavf_calc_context_desc(mb->ol_flags, txq->vlan_flag);
@@ -2892,8 +2912,12 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				txe->mbuf = NULL;
 			}
 
-			iavf_fill_context_desc(ctx_desc, mb, ipsec_md, &tlen,
-				txq->vlan_flag);
+			iavf_fill_context_desc(ctx_desc, mb,
+#ifdef RTE_LIB_SECURITY
+                                  ipsec_md,
+#endif
+                                  &tlen,
+				                  txq->vlan_flag);
 			IAVF_DUMP_TX_DESC(txq, ctx_desc, desc_idx);
 
 			txe->last_id = desc_idx_last;
@@ -2914,7 +2938,9 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				txe->mbuf = NULL;
 			}
 
+#ifdef RTE_LIB_SECURITY
 			iavf_fill_ipsec_desc(ipsec_desc, ipsec_md, &ipseclen);
+#endif
 
 			IAVF_DUMP_TX_DESC(txq, ipsec_desc, desc_idx);
 
@@ -4861,3 +4887,48 @@ iavf_set_default_ptype_table(struct rte_eth_dev *dev)
 	for (i = 0; i < IAVF_MAX_PKT_TYPE; i++)
 		ad->ptype_tbl[i] = iavf_get_default_ptype(i);
 }
+
+#ifndef CC_AVX2_SUPPORT
+
+uint16_t
+iavf_recv_scattered_pkts_vec_avx2_flex_rxd(void *rx_queue,
+                                           struct rte_mbuf **rx_pkts,
+                                           uint16_t nb_pkts)
+{
+    iavf_recv_scattered_pkts_vec_flex_rxd(rx_queue, rx_pkts, nb_pkts);
+}
+
+uint16_t
+iavf_recv_scattered_pkts_vec_avx2(void *rx_queue,
+                                  struct rte_mbuf **rx_pkts,
+                                  uint16_t nb_pkts)
+{
+    iavf_recv_scattered_pkts_vec(rx_queue, rx_pkts, nb_pkts);
+}
+
+uint16_t
+iavf_recv_pkts_vec_avx2_flex_rxd(void *rx_queue,
+                                struct rte_mbuf **rx_pkts,
+                                uint16_t nb_pkts)
+{
+    iavf_recv_pkts_vec_flex_rxd(rx_queue, rx_pkts, nb_pkts);
+}
+
+
+uint16_t
+iavf_recv_pkts_vec_avx2(void *rx_queue,
+                        struct rte_mbuf **rx_pkts,
+                        uint16_t nb_pkts)
+{
+    iavf_recv_pkts_vec(rx_queue, rx_pkts, nb_pkts);
+}
+
+uint16_t
+iavf_xmit_pkts_vec_avx2(void *tx_queue,
+                        struct rte_mbuf **tx_pkts,
+                        uint16_t nb_pkts)
+{
+    iavf_xmit_pkts_vec(tx_queue, tx_pkts, nb_pkts);
+}
+
+#endif /* ifndef CC_AVX2_SUPPORT */

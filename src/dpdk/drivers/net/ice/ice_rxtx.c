@@ -4606,3 +4606,52 @@ ice_fdir_programming(struct ice_pf *pf, struct ice_fltr_desc *fdir_desc)
 
 
 }
+#ifndef CC_AVX2_SUPPORT
+uint16_t
+ice_recv_pkts_vec_avx2(void *rx_queue,
+			struct rte_mbuf **rx_pkts,
+			uint16_t nb_pkts)
+{
+	return ice_recv_pkts(rx_queue,rx_pkts,nb_pkts);
+}
+
+uint16_t
+ice_recv_scattered_pkts_vec_avx2(void *rx_queue,
+			struct rte_mbuf **rx_pkts,
+			uint16_t nb_pkts)
+{
+	return ice_recv_scattered_pkts(rx_queue,rx_pkts,nb_pkts);
+}
+
+uint16_t
+ice_xmit_pkts_vec_avx2(void *tx_queue,
+			  struct rte_mbuf **tx_pkts,
+			  uint16_t nb_pkts)
+{
+	return ice_xmit_pkts_vec(tx_queue,tx_pkts,nb_pkts);
+}
+
+uint16_t
+ice_recv_scattered_pkts_vec_avx2_offload(void *rx_queue,
+			struct rte_mbuf **rx_pkts,
+			uint16_t nb_pkts)
+{
+	return ice_recv_scattered_pkts(rx_queue,rx_pkts,nb_pkts);
+}
+
+uint16_t
+ice_recv_pkts_vec_avx2_offload(void *rx_queue,
+			struct rte_mbuf **rx_pkts,
+			uint16_t nb_pkts)
+{
+	return ice_recv_pkts(rx_queue,rx_pkts,nb_pkts);
+}
+
+uint16_t
+ice_xmit_pkts_vec_avx2_offload(void *tx_queue,
+			struct rte_mbuf **tx_pkts,
+			uint16_t  nb_pkts)
+{
+	return ice_xmit_pkts_vec(tx_queue,tx_pkts,nb_pkts);
+}
+#endif /* ifndef CC_AVX2_SUPPORT */

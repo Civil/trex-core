@@ -27,7 +27,7 @@
 #include "mlx5_common_mr.h"
 
 /* Reported driver name. */
-#define MLX5_PCI_DRIVER_NAME "mlx5_pci"
+#define MLX5_PCI_DRIVER_NAME "net_mlx5"
 #define MLX5_AUXILIARY_DRIVER_NAME "mlx5_auxiliary"
 
 /* Bit-field manipulation. */

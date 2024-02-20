@@ -1767,6 +1767,15 @@ member_configure(struct rte_eth_dev *bonding_eth_dev,
 
 	member_eth_dev->data->dev_conf.rxmode.offloads =
 			bonding_eth_dev->data->dev_conf.rxmode.offloads;
+#ifdef  TREX_PATCH
+       if (bonding_eth_dev->data->dev_conf.txmode.offloads &
+                       RTE_ETH_TX_OFFLOAD_MULTI_SEGS)
+               member_eth_dev->data->dev_conf.txmode.offloads |=
+                       RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
+       else
+               member_eth_dev->data->dev_conf.txmode.offloads &=
+                       ~RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
+#endif
 
 	nb_rx_queues = bonding_eth_dev->data->nb_rx_queues;
 	nb_tx_queues = bonding_eth_dev->data->nb_tx_queues;
@@ -2275,6 +2284,15 @@ bond_ethdev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_rx_pktlen = internals->candidate_max_rx_pktlen ?
 			internals->candidate_max_rx_pktlen :
 			RTE_ETHER_MAX_JUMBO_FRAME_LEN;
+#ifdef TREX_PATCH
+	/* Intel NIC drivers provide max_mtu because they have larger overhead than default value.
+	 * So, the calculated MTU value by the default overhead can be exceeded in this case.
+	 * To solve this issue, proper max_mtu vaule should be provided.
+	 * The calculated max_mtu by maximum overhead (from Intel NIC drivers) could be enough.
+	 */
+#define BOND_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + RTE_VLAN_HLEN * 2)
+	dev_info->max_mtu = dev_info->max_rx_pktlen - BOND_ETH_OVERHEAD;
+#endif
 
 	/* Max number of tx/rx queues that the bonding device can support is the
 	 * minimum values of the bonding members, as all members must be capable

@@ -160,21 +160,29 @@ rte_ipv4_hdr_len(const struct rte_ipv4_hdr *ipv4_hdr)
 static inline uint32_t
 __rte_raw_cksum(const void *buf, size_t len, uint32_t sum)
 {
-	const void *end;
+	/* workaround gcc strict-aliasing warning */
+	uintptr_t ptr = (uintptr_t)buf;
+	typedef uint16_t __attribute__((__may_alias__)) u16_p;
+	const u16_p *u16_buf = (const u16_p *)ptr;
 
-	for (end = RTE_PTR_ADD(buf, RTE_ALIGN_FLOOR(len, sizeof(uint16_t)));
-	     buf != end; buf = RTE_PTR_ADD(buf, sizeof(uint16_t))) {
-		uint16_t v;
-
-		memcpy(&v, buf, sizeof(uint16_t));
-		sum += v;
+	while (len >= (sizeof(*u16_buf) * 4)) {
+		sum += u16_buf[0];
+		sum += u16_buf[1];
+		sum += u16_buf[2];
+		sum += u16_buf[3];
+		len -= sizeof(*u16_buf) * 4;
+		u16_buf += 4;
+	}
+	while (len >= sizeof(*u16_buf)) {
+		sum += *u16_buf;
+		len -= sizeof(*u16_buf);
+		u16_buf += 1;
 	}
 
-	/* if length is odd, keeping it byte order independent */
-	if (unlikely(len % 2)) {
+	/* if length is in odd bytes */
+	if (len == 1) {
 		uint16_t left = 0;
-
-		memcpy(&left, end, 1);
+		*(uint8_t *)&left = *(const uint8_t *)u16_buf;
 		sum += left;
 	}
 
@@ -274,8 +282,10 @@ rte_raw_cksum_mbuf(const struct rte_mbuf *m, uint32_t off, uint32_t len,
 	done = 0;
 	for (;;) {
 		tmp = __rte_raw_cksum(buf, seglen, 0);
-		if (done & 1)
+		if (done & 1){
+			tmp = __rte_raw_cksum_reduce(tmp);
 			tmp = rte_bswap16((uint16_t)tmp);
+		}
 		sum += tmp;
 		done += seglen;
 		if (done == len)

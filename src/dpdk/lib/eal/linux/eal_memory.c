@@ -787,11 +787,16 @@ remap_segment(struct hugepage_file *hugepages, int seg_start, int seg_end)
 		ms->nrank = rte_memory_get_nrank();
 
 		rte_fbarray_set_used(arr, ms_idx);
-
+#ifdef TREX_PATCH
+// ybrustin: revert commit 1009ba1704f9cffd47d46fb8eda8671ef30e966d
+// we are hitting limit of open files (4k)
+		close(fd);
+#else
 		/* store segment fd internally */
 		if (eal_memalloc_set_seg_fd(msl_idx, ms_idx, fd) < 0)
 			RTE_LOG(ERR, EAL, "Could not store segment fd: %s\n",
 				rte_strerror(rte_errno));
+#endif
 	}
 	RTE_LOG(DEBUG, EAL, "Allocated %" PRIu64 "M on socket %i\n",
 			(seg_len * page_sz) >> 20, socket_id);

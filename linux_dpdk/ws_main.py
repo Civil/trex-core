@@ -56,7 +56,7 @@ clang_flags = ['-Wno-null-conversion',
                '-Wno-macro-redefined']
 
 gcc_flags = ['-Wall',
-             '-Werror',
+             #'-Werror',
              '-Wno-literal-suffix',
              '-Wno-sign-compare',
              '-Wno-strict-aliasing',
@@ -654,6 +654,36 @@ def configure_mlx5 (ctx):
         [ 'HAVE_MLX5_DR_CREATE_ACTION_FLOW_SAMPLE', 'infiniband/mlx5dv.h',
         'func','mlx5dv_dr_action_create_flow_sampler'],
 
+        [ 'HAVE_IBV_FLOW_SPEC_ESP', 'infiniband/verbs.h',
+            'enum', 'IBV_FLOW_SPEC_ESP' ],
+        [ 'HAVE_IBV_FORK_UNNEEDED', 'infiniband/verbs.h',
+            'func', 'ibv_is_fork_initialized'],
+        [ 'HAVE_IBV_RX_HASH_IPSEC_SPI', 'infiniband/verbs.h',
+            'enum', 'IBV_RX_HASH_IPSEC_SPI' ],
+        [ 'HAVE_MLX5_DR_ACTION_ASO_CT', 'infiniband/mlx5dv.h',
+            'enum', 'MLX5DV_DR_ACTION_FLAGS_ASO_CT_DIRECTION_INITIATOR' ],
+        [ 'HAVE_MLX5_DR_ALLOW_DUPLICATE', 'infiniband/mlx5dv.h',
+            'func', 'mlx5dv_dr_domain_allow_duplicate_rules' ],
+        [ 'HAVE_MLX5_DR_FLOW_DUMP_RULE', 'infiniband/mlx5dv.h',
+            'func', 'mlx5dv_dump_dr_rule' ],
+        [ 'HAVE_MLX5DV_CREATE_STEERING_ANCHOR', 'infiniband/mlx5dv.h',
+            'func', 'mlx5dv_create_steering_anchor'],
+        [ 'HAVE_MLX5DV_DR_ACTION_CREATE_DEST_ROOT_TABLE', 'infiniband/mlx5dv.h',
+            'func', 'mlx5dv_dr_action_create_dest_root_table' ],
+        [ 'HAVE_MLX5DV_DR_DEVX_PORT_V35', 'infiniband/mlx5dv.h',
+            'func', 'mlx5dv_query_port' ],
+        [ 'HAVE_MLX5DV_DR_CREATE_DEST_IB_PORT', 'infiniband/mlx5dv.h',
+            'func', 'mlx5dv_dr_action_create_dest_ib_port' ],
+        [ 'HAVE_MLX5DV_FLOW_MATCHER_FT_TYPE', 'infiniband/mlx5dv.h',
+            'type', 'struct mlx5dv_flow_matcher_attr' ],
+        [ 'HAVE_MLX5_IBV_IMPORT_CTX_PD_AND_MR', 'infiniband/verbs.h',
+            'func', 'ibv_import_device' ],
+        [ 'HAVE_MLX5_IBV_REG_MR_IOVA', 'infiniband/verbs.h',
+            'func', 'ibv_reg_mr_iova' ],
+        [ 'HAVE_MLX5_UMR_IMKEY', 'infiniband/mlx5dv.h',
+            'enum', 'MLX5_WQE_UMR_CTRL_FLAG_INLINE' ],
+        [ 'HAVE_RDMA_NLDEV_ATTR_PORT_STATE', 'rdma/rdma_netlink.h',
+            'enum', 'RDMA_NLDEV_ATTR_PORT_STATE' ],
     ]
     autoconf_script = 'src/dpdk/auto-config-h.sh'
     autoconf_command = os.path.join(top, autoconf_script)
@@ -1299,8 +1329,6 @@ dpdk_src_x86_64 = SrcGroup(dir='src/dpdk/',
                 'drivers/net/ice/ice_switch_filter.c',
                 'drivers/net/ice/ice_fdir_filter.c',
                 'drivers/net/ice/ice_hash.c',
-                #'drivers/net/ice/ice_rxtx_vec_avx2.c',
-                #'drivers/net/ice/ice_rxtx_vec_avx512.c',
                 'drivers/net/ice/ice_generic_flow.c',
                 'drivers/net/ice/ice_dcf_sched.c',
                 'drivers/net/ice/ice_tm.c',
@@ -1325,7 +1353,7 @@ dpdk_src_x86_64 = SrcGroup(dir='src/dpdk/',
                  'drivers/net/ixgbe/ixgbe_pf.c',
                  'drivers/net/ixgbe/ixgbe_rxtx.c',
                  'drivers/net/ixgbe/ixgbe_rxtx_vec_sse.c',
-                 #'drivers/net/ixgbe/ixgbe_ipsec.c',
+                 # 'drivers/net/ixgbe/ixgbe_ipsec.c',
                  'drivers/net/ixgbe/ixgbe_tm.c',
                  'drivers/net/ixgbe/ixgbe_vf_representor.c',
                  'drivers/net/ixgbe/rte_pmd_ixgbe.c',
@@ -1410,6 +1438,19 @@ dpdk_src_x86_64 = SrcGroup(dir='src/dpdk/',
                  'drivers/net/bonding/rte_eth_bond_8023ad.c',
                  'drivers/net/bonding/rte_eth_bond_alb.c',
 
+                 # avx2/avx512
+                 'drivers/net/bnxt/bnxt_rxtx_vec_avx2.c',
+
+                 'drivers/net/ice/ice_rxtx_vec_avx2.c',
+                 'drivers/net/ice/ice_rxtx_vec_avx512.c',
+
+                 'drivers/net/iavf/iavf_rxtx_vec_avx2.c',
+                 'drivers/net/iavf/iavf_rxtx_vec_avx512.c',
+
+                 'drivers/net/i40e/i40e_rxtx_vec_avx2.c',
+                 'drivers/net/i40e/i40e_rxtx_vec_avx512.c',
+
+                 'drivers/net/ixgbe/ixgbe_recycle_mbufs_vec_common.c',
                  ])
 
 dpdk_src_x86_64_ext = SrcGroup(dir='src',
@@ -1457,7 +1498,7 @@ dpdk_src_ppc64le = SrcGroup(dir='src/dpdk/',
 
 dpdk_src = SrcGroup(dir='src/dpdk/',
                 src_list=[
-                '../dpdk_funcs.c',
+                 '../dpdk_funcs.c',
                  'drivers/bus/auxiliary/auxiliary_common.c',
                  'drivers/bus/auxiliary/auxiliary_params.c',
                  'drivers/bus/pci/pci_common.c',
@@ -1474,9 +1515,82 @@ dpdk_src = SrcGroup(dir='src/dpdk/',
                  'drivers/bus/vmbus/vmbus_common_uio.c',
                  'drivers/bus/vmbus/linux/vmbus_bus.c',
                  'drivers/bus/vmbus/linux/vmbus_uio.c',
-                'drivers/mempool/ring/rte_mempool_ring.c',
+                 'drivers/mempool/ring/rte_mempool_ring.c',
+
+                 # cnxk
+                 'drivers/common/cnxk/roc_ae.c',
+                 'drivers/common/cnxk/roc_aes.c',
+                 'drivers/common/cnxk/roc_ae_fpm_tables.c',
+                 'drivers/common/cnxk/roc_bphy.c',
+                 'drivers/common/cnxk/roc_bphy_cgx.c',
+                 'drivers/common/cnxk/roc_bphy_irq.c',
+                 'drivers/common/cnxk/roc_cpt.c',
+                 'drivers/common/cnxk/roc_cpt_debug.c',
+                 'drivers/common/cnxk/roc_dev.c',
+                 'drivers/common/cnxk/roc_dpi.c',
+                 'drivers/common/cnxk/roc_hash.c',
+                 'drivers/common/cnxk/roc_idev.c',
+                 'drivers/common/cnxk/roc_irq.c',
+                 'drivers/common/cnxk/roc_ie_ot.c',
+                 'drivers/common/cnxk/roc_mbox.c',
+                 'drivers/common/cnxk/roc_mcs.c',
+                 'drivers/common/cnxk/roc_mcs_sec_cfg.c',
+                 'drivers/common/cnxk/roc_mcs_stats.c',
+                 'drivers/common/cnxk/roc_ml.c',
+                 'drivers/common/cnxk/roc_model.c',
+                 'drivers/common/cnxk/roc_nix.c',
+                 'drivers/common/cnxk/roc_nix_bpf.c',
+                 'drivers/common/cnxk/roc_nix_debug.c',
+                 'drivers/common/cnxk/roc_nix_fc.c',
+                 'drivers/common/cnxk/roc_nix_irq.c',
+                 'drivers/common/cnxk/roc_nix_inl.c',
+                 'drivers/common/cnxk/roc_nix_inl_dev.c',
+                 'drivers/common/cnxk/roc_nix_inl_dev_irq.c',
+                 'drivers/common/cnxk/roc_nix_mac.c',
+                 'drivers/common/cnxk/roc_nix_mcast.c',
+                 'drivers/common/cnxk/roc_nix_npc.c',
+                 'drivers/common/cnxk/roc_nix_ops.c',
+                 'drivers/common/cnxk/roc_nix_ptp.c',
+                 'drivers/common/cnxk/roc_nix_queue.c',
+                 'drivers/common/cnxk/roc_nix_rss.c',
+                 'drivers/common/cnxk/roc_nix_stats.c',
+                 'drivers/common/cnxk/roc_nix_tm.c',
+                 'drivers/common/cnxk/roc_nix_tm_mark.c',
+                 'drivers/common/cnxk/roc_nix_tm_ops.c',
+                 'drivers/common/cnxk/roc_nix_tm_utils.c',
+                 'drivers/common/cnxk/roc_nix_vlan.c',
+                 'drivers/common/cnxk/roc_npa.c',
+                 'drivers/common/cnxk/roc_npa_debug.c',
+                 'drivers/common/cnxk/roc_npa_irq.c',
+                 'drivers/common/cnxk/roc_npa_type.c',
+                 'drivers/common/cnxk/roc_npc.c',
+                 'drivers/common/cnxk/roc_npc_aging.c',
+                 'drivers/common/cnxk/roc_npc_mcam.c',
+                 'drivers/common/cnxk/roc_npc_mcam_dump.c',
+                 'drivers/common/cnxk/roc_npc_parse.c',
+                 'drivers/common/cnxk/roc_npc_utils.c',
+                 'drivers/common/cnxk/roc_platform.c',
+                 'drivers/common/cnxk/roc_se.c',
+                 'drivers/common/cnxk/roc_sso.c',
+                 'drivers/common/cnxk/roc_sso_debug.c',
+                 'drivers/common/cnxk/roc_sso_irq.c',
+                 'drivers/common/cnxk/roc_tim.c',
+                 'drivers/common/cnxk/roc_tim_irq.c',
+                 'drivers/common/cnxk/roc_utils.c',
+                 'drivers/common/cnxk/roc_ree.c',
+                 'drivers/common/cnxk/cnxk_security.c',
+                 'drivers/common/cnxk/cnxk_utils.c',
+                 'drivers/common/cnxk/cnxk_telemetry_bphy.c',
+                 'drivers/common/cnxk/cnxk_telemetry_npa.c',
+                 'drivers/common/cnxk/cnxk_telemetry_nix.c',
+                 'drivers/common/cnxk/cnxk_telemetry_sso.c',
+                 'drivers/mempool/cnxk/cn10k_hwpool_ops.c',
                  ##'drivers/mempool/stack/rte_mempool_stack.c', # requires dpdk/lib/librte_stack/rte_stack.h
 
+
+                 # RTE logging
+                 'lib/log/log.c',
+                 'lib/log/log_linux.c',
 
                  # drivers
                  #bnxt
@@ -1513,20 +1627,24 @@ dpdk_src = SrcGroup(dir='src/dpdk/',
                  'drivers/net/bnxt/tf_core/tf_device_p4.c',
                  'drivers/net/bnxt/tf_core/tf_device_p58.c',
                  'drivers/net/bnxt/tf_core/tf_identifier.c',
-                 'drivers/net/bnxt/tf_core/tf_shadow_tcam.c',
                  'drivers/net/bnxt/tf_core/tf_tcam.c',
                  'drivers/net/bnxt/tf_core/tf_util.c',
                  'drivers/net/bnxt/tf_core/tf_if_tbl.c',
                  'drivers/net/bnxt/tf_core/ll.c',
                  'drivers/net/bnxt/tf_core/tf_global_cfg.c',
                  'drivers/net/bnxt/tf_core/tf_em_host.c',
-                 'drivers/net/bnxt/tf_core/tf_shadow_identifier.c',
                  'drivers/net/bnxt/tf_core/tf_hash.c',
                  'drivers/net/bnxt/tf_core/dpool.c',
                  'drivers/net/bnxt/tf_core/tf_tcam_shared.c',
                  'drivers/net/bnxt/tf_core/tf_tbl_sram.c',
                  'drivers/net/bnxt/tf_core/tf_sram_mgr.c',
                  'drivers/net/bnxt/tf_core/tf_em_hash_internal.c',
+                 'drivers/net/bnxt/tf_core/cfa_tcam_mgr.c',
+                 'drivers/net/bnxt/tf_core/cfa_tcam_mgr_hwop_msg.c',
+                 'drivers/net/bnxt/tf_core/cfa_tcam_mgr_p4.c',
+                 'drivers/net/bnxt/tf_core/cfa_tcam_mgr_p58.c',
+                 'drivers/net/bnxt/tf_core/cfa_tcam_mgr_session.c',
+                 'drivers/net/bnxt/tf_core/tf_tcam_mgr_msg.c',
 
                  'drivers/net/bnxt/hcapi/cfa/hcapi_cfa_p4.c',
                  'drivers/net/bnxt/hcapi/cfa/hcapi_cfa_p58.c',
@@ -1556,6 +1674,7 @@ dpdk_src = SrcGroup(dir='src/dpdk/',
                  "drivers/net/bnxt/tf_ulp/ulp_rte_handler_tbl.c",
                  'drivers/net/bnxt/tf_ulp/generic_templates/ulp_template_db_wh_plus_act.c',
                  'drivers/net/bnxt/tf_ulp/generic_templates/ulp_template_db_wh_plus_class.c',
+                 'drivers/net/bnxt/tf_ulp/bnxt_ulp_meter.c',
 
                 #  #e1000
                  'drivers/net/e1000/base/e1000_base.c',
@@ -1616,6 +1735,7 @@ dpdk_src = SrcGroup(dir='src/dpdk/',
                  'drivers/net/iavf/iavf_hash.c',
                  'drivers/net/iavf/iavf_fdir.c',
                  'drivers/net/iavf/iavf_rxtx_vec_sse.c',
+                 # 'drivers/net/iavf/iavf_ipsec_crypto.c',
 
                  'drivers/common/iavf/iavf_adminq.c',
                  'drivers/common/iavf/iavf_common.c',
@@ -1641,7 +1761,6 @@ dpdk_src = SrcGroup(dir='src/dpdk/',
                  'lib/eal/common/eal_common_hexdump.c',
                  'lib/eal/common/eal_common_launch.c',
                  'lib/eal/common/eal_common_lcore.c',
-                 'lib/eal/common/eal_common_log.c',
                  'lib/eal/common/eal_common_memalloc.c',
                  'lib/eal/common/eal_common_memory.c',
                  'lib/eal/common/eal_common_memzone.c',
@@ -1682,7 +1801,6 @@ dpdk_src = SrcGroup(dir='src/dpdk/',
                  'lib/eal/linux/eal_hugepage_info.c',
                  'lib/eal/linux/eal_interrupts.c',
                  'lib/eal/linux/eal_lcore.c',
-                 'lib/eal/linux/eal_log.c',
                  'lib/eal/linux/eal_memalloc.c',
                  'lib/eal/linux/eal_memory.c',
                  'lib/eal/linux/eal_thread.c',
@@ -1696,6 +1814,7 @@ dpdk_src = SrcGroup(dir='src/dpdk/',
 
                  'lib/ethdev/rte_ethdev.c',
                  'lib/ethdev/rte_flow.c',
+'lib/ethdev/rte_ethdev_telemetry.c',
 
                  'lib/ethdev/ethdev_trace_points.c',
                  'lib/ethdev/ethdev_private.c',
@@ -1778,6 +1897,7 @@ i40e_dpdk_src = SrcGroup(
         'i40e_tm.c',
         'i40e_vf_representor.c',
         'rte_pmd_i40e.c',
+        'i40e_recycle_mbufs_vec_common.c',
     ])
 
 mlx5_x86_64_dpdk_src = SrcGroup(
@@ -1823,6 +1943,10 @@ mlx5_x86_64_dpdk_src = SrcGroup(
         'net/mlx5/mlx5_flow_meter.c',
         'net/mlx5/mlx5_rss.c',
         'net/mlx5/mlx5_hws_cnt.c',
+        'net/mlx5/mlx5_flow_quota.c',
+        'net/mlx5/mlx5_trace.c',
+        # 'crypto/mlx5/mlx5_crypto_gcm.c',
+        # 'crypto/mlx5/mlx5_crypto_xts.c',
 
         'net/mlx5/hws/mlx5dr_matcher.c',
         'net/mlx5/hws/mlx5dr_pool.c',
@@ -1837,6 +1961,7 @@ mlx5_x86_64_dpdk_src = SrcGroup(
         'net/mlx5/hws/mlx5dr_rule.c',
         'net/mlx5/hws/mlx5dr_send.c',
         'net/mlx5/hws/mlx5dr_table.c',
+        'net/mlx5/hws/mlx5dr_crc32.c',
 
         'net/mlx5/linux/mlx5_verbs.c',
         'net/mlx5/linux/mlx5_os.c',
@@ -1987,6 +2112,9 @@ common_flags = ['-DWIN_UCODE_SIM',
                 '-DABI_VERSION="22.1"',
                 '-DALLOW_EXPERIMENTAL_API',
                 '-DRTE_USE_FUNCTION_VERSIONING',
+                '-DTREX_PATCH',
+                '-DTREX_PATCH_LOW_LATENCY',
+                '-DBNXT_TF_APP_ID=0',
                 #'-D_GLIBCXX_USE_CXX11_ABI=0', # see libstdc++ ABI changes for string and list
                 #'-DTREX_PERF', # used when using TRex and PERF for performance measurement
                 #'-D__DEBUG_FUNC_ENTRY__', # Added by Ido to debug Flow Stats
@@ -1997,7 +2125,7 @@ common_flags = ['-DWIN_UCODE_SIM',
 if march == 'x86_64':
     common_flags_new = common_flags + [
                     '-march=native',
-                    '-mssse3', '-msse4.1', '-mpclmul', '-mno-avx2',
+                    '-mssse3', '-msse4.1', '-mpclmul', '-mavx', '-mrtm',
                     '-DRTE_MACHINE_CPUFLAG_SSE',
                     '-DRTE_MACHINE_CPUFLAG_SSE2',
                     '-DRTE_MACHINE_CPUFLAG_SSE3',
@@ -2017,6 +2145,16 @@ if march == 'x86_64':
 
                    ]
 
+    common_flags_avx512 = common_flags_new + [
+                    '-DCC_AVX512_SUPPORT',
+                    '-DCC_AVX2_SUPPORT',
+                    '-DCC_AVX_SUPPORT',
+                    '-DRTE_MACHINE_CPUFLAG_AVX2',
+                    '-DRTE_MACHINE_CPUFLAG_AVX512F',
+                    '-DRTE_MACHINE_CPUFLAG_AVX512BW',
+                    '-mavx2', '-mavx512f', '-mavx512bw',
+                    ]
+
     common_flags_old = common_flags + [
                       '-march=corei7',
                       '-DUCS_210',
@@ -2030,6 +2168,7 @@ if march == 'x86_64':
                       '-DSUPPORT_CFA_HW_ALL=1',
 
                       ]
+    common_flags_old = common_flags_new
 
 elif march == 'aarch64':
     common_flags_new = common_flags + [
@@ -2094,13 +2233,15 @@ dpdk_includes_path_ppc64le ='''
 
 dpdk_includes_path =''' ../src/
                         ../src/pal/linux_dpdk/
-                        ../src/pal/linux_dpdk/dpdk_2303_'''+ march +'''/
+                        ../src/pal/linux_dpdk/dpdk_2311_'''+ march +'''/
                         ../src/dpdk/drivers/
+                        ../src/dpdk/drivers/common/cnxk/
                         ../src/dpdk/drivers/common/mlx5/
                         ../src/dpdk/drivers/common/mlx5/linux/
                         ../src/dpdk/drivers/net/mlx5/linux/
                         ../src/dpdk/drivers/net/
                         ../src/dpdk/drivers/net/af_packet/
+
                         ../src/dpdk/drivers/net/tap/
                         ../src/dpdk/drivers/net/failsafe/
                         ../src/dpdk/drivers/net/vdev_netvsc/
@@ -2139,8 +2280,11 @@ dpdk_includes_path =''' ../src/
 
                         ../src/dpdk/lib/
 
+                        ../src/dpdk/lib/log/
+
                         ../src/dpdk/lib/cfgfile/
                         ../src/dpdk/lib/compat/
+                        ../src/dpdk/lib/cryptodev/
                         ../src/dpdk/lib/eal/
                         ../src/dpdk/lib/eal/include/                        
                         ../src/dpdk/lib/eal/common/
@@ -2215,11 +2359,11 @@ bpf_includes_path = '../external_libs/bpf ../external_libs/bpf/bpfjit'
 
 
 if march == 'x86_64':
-    DPDK_FLAGS=['-DTAP_MAX_QUEUES=16','-D_GNU_SOURCE', '-DPF_DRIVER', '-DX722_SUPPORT', '-DX722_A0_SUPPORT', '-DVF_DRIVER', '-DINTEGRATED_VF', '-include', '../src/pal/linux_dpdk/dpdk_2303_x86_64/rte_config.h','-DALLOW_INTERNAL_API','-DABI_VERSION="22.1"']
+    DPDK_FLAGS=['-DTAP_MAX_QUEUES=16','-D_GNU_SOURCE', '-DPF_DRIVER', '-DX722_SUPPORT', '-DX722_A0_SUPPORT', '-DVF_DRIVER', '-DINTEGRATED_VF', '-include', '../src/pal/linux_dpdk/dpdk_2311_x86_64/rte_config.h','-DALLOW_INTERNAL_API','-DABI_VERSION="22.1"']
 elif march == 'aarch64':
-    DPDK_FLAGS=['-DTAP_MAX_QUEUES=16','-D_GNU_SOURCE', '-DPF_DRIVER', '-DVF_DRIVER', '-DINTEGRATED_VF', '-DRTE_FORCE_INTRINSICS', '-include', '../src/pal/linux_dpdk/dpdk_2303_x86_64_aarch64/rte_config.h']
+    DPDK_FLAGS=['-DTAP_MAX_QUEUES=16','-D_GNU_SOURCE', '-DPF_DRIVER', '-DVF_DRIVER', '-DINTEGRATED_VF', '-DRTE_FORCE_INTRINSICS', '-include', '../src/pal/linux_dpdk/dpdk_2311_x86_64_aarch64/rte_config.h']
 elif march == 'ppc64le':
-    DPDK_FLAGS=['-DTAP_MAX_QUEUES=16','-D_GNU_SOURCE', '-DPF_DRIVER', '-DX722_SUPPORT', '-DX722_A0_SUPPORT', '-DVF_DRIVER', '-DINTEGRATED_VF', '-include', '../src/pal/linux_dpdk/dpdk_2303_x86_64_ppc64le/rte_config.h']
+    DPDK_FLAGS=['-DTAP_MAX_QUEUES=16','-D_GNU_SOURCE', '-DPF_DRIVER', '-DX722_SUPPORT', '-DX722_A0_SUPPORT', '-DVF_DRIVER', '-DINTEGRATED_VF', '-include', '../src/pal/linux_dpdk/dpdk_2311_x86_64_ppc64le/rte_config.h']
 
 client_external_libs = [
         'simple_enum',
@@ -2394,10 +2538,11 @@ class build_option:
         return (flags)
 
     def get_common_flags (self):
-        if self.isPIE():
-            flags = copy.copy(common_flags_old)
-        else:
-            flags = copy.copy(common_flags_new)
+        #if self.isPIE():
+        #    flags = copy.copy(common_flags_old)
+        #else:
+        #    flags = copy.copy(common_flags_new)
+        flags = copy.copy(common_flags_avx512)
 
         if self.isIntelPlatform():
             if self.is64Platform():

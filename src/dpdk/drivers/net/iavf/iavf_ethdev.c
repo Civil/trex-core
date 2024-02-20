@@ -31,7 +31,9 @@
 #include "iavf_rxtx.h"
 #include "iavf_generic_flow.h"
 #include "rte_pmd_iavf.h"
+#ifdef RTE_LIB_SECURITY
 #include "iavf_ipsec_crypto.h"
+#endif
 
 /* devargs */
 #define IAVF_PROTO_XTR_ARG         "proto_xtr"
@@ -147,10 +149,12 @@ static int iavf_tm_ops_get(struct rte_eth_dev *dev __rte_unused, void *arg);
 
 static const struct rte_pci_id pci_id_iavf_map[] = {
 	{ RTE_PCI_DEVICE(IAVF_INTEL_VENDOR_ID, IAVF_DEV_ID_ADAPTIVE_VF) },
+#ifndef TREX_PATCH  /* pci_id_i40evf_map */
 	{ RTE_PCI_DEVICE(IAVF_INTEL_VENDOR_ID, IAVF_DEV_ID_VF) },
 	{ RTE_PCI_DEVICE(IAVF_INTEL_VENDOR_ID, IAVF_DEV_ID_VF_HV) },
 	{ RTE_PCI_DEVICE(IAVF_INTEL_VENDOR_ID, IAVF_DEV_ID_X722_VF) },
 	{ RTE_PCI_DEVICE(IAVF_INTEL_VENDOR_ID, IAVF_DEV_ID_X722_A0_VF) },
+#endif
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -1179,12 +1183,12 @@ iavf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_CAP_PTP)
 		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
-
+#ifdef RTE_LIB_SECURITY
 	if (iavf_ipsec_crypto_supported(adapter)) {
 		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_SECURITY;
 		dev_info->tx_offload_capa |= RTE_ETH_TX_OFFLOAD_SECURITY;
 	}
-
+#endif
 	dev_info->default_rxconf = (struct rte_eth_rxconf) {
 		.rx_free_thresh = IAVF_DEFAULT_RX_FREE_THRESH,
 		.rx_drop_en = 0,
@@ -1900,10 +1904,10 @@ static int iavf_dev_xstats_get(struct rte_eth_dev *dev,
 
 	iavf_update_stats(vsi, pstats);
 	iavf_xtats.eth_stats = *pstats;
-
+#ifdef RTE_LIB_SECURITY
 	if (iavf_ipsec_crypto_supported(adapter))
 		iavf_dev_update_ipsec_xstats(dev, &iavf_xtats.ips_stats);
-
+#endif
 	/* loop over xstats array and values from pstats */
 	for (i = 0; i < IAVF_NB_XSTATS; i++) {
 		xstats[i].id = i;
@@ -2770,7 +2774,7 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 		PMD_INIT_LOG(ERR, "Failed to initialize flow");
 		goto flow_init_err;
 	}
-
+#ifdef RTE_LIB_SECURITY
 	/** Check if the IPsec Crypto offload is supported and create
 	 *  security_ctx if it is.
 	 */
@@ -2788,7 +2792,7 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 			goto security_init_err;
 		}
 	}
-
+#endif
 	iavf_default_rss_disable(adapter);
 
 	iavf_dev_stats_reset(eth_dev);
@@ -2861,7 +2865,9 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	adapter->closed = true;
 
 	/* free iAVF security device context all related resources */
+#ifdef RTE_LIB_SECURITY
 	iavf_security_ctx_destroy(adapter);
+#endif
 
 	iavf_flow_flush(dev, NULL);
 	iavf_flow_uninit(adapter);

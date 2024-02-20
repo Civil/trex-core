@@ -2810,6 +2810,7 @@ mlx5_flow_validate_item_vlan(const struct rte_flow_item *item,
 					MLX5_ITEM_RANGE_NOT_ACCEPTED, error);
 	if (ret)
 		return ret;
+#ifndef TREX_PATCH
 	if (!tunnel && mask->hdr.vlan_tci != RTE_BE16(0x0fff)) {
 		struct mlx5_priv *priv = dev->data->dev_private;
 
@@ -2842,6 +2843,7 @@ mlx5_flow_validate_item_vlan(const struct rte_flow_item *item,
 					  RTE_FLOW_ERROR_TYPE_ITEM_SPEC,
 					  item->spec,
 					  "VLAN cannot be empty");
+#endif
 	return 0;
 }
 

@@ -660,9 +660,72 @@ struct rte_mbuf {
 
 	/** Timesync flags for use with IEEE1588. */
 	uint16_t timesync;
-
+#ifdef TREX_PATCH
+      uint8_t   m_core_locality;
+	  uint8_t   m_dummy1;
+	  uint16_t  m_dummy2;
+	  void *   dynfield_ptr; 
+	  uint32_t dynfield1[6]; /**< Reserved for dynamic fields. */
+#else
 	uint32_t dynfield1[9]; /**< Reserved for dynamic fields. */
+#endif
 } __rte_cache_aligned;
+
+#ifdef TREX_PATCH
+
+/**
+ * MBUF core locality type 
+ *  
+ * if RTE_MBUF_TYPE_CORE_LOCAL then the MBUF should be used with 
+ * the allocating core only.
+ *  
+ * RTE_MBUF_TYPE_CORE_CONST means that the mbuf is shared and there is no need to do ref count 
+ * 
+ * when RTE_MBUF_TYPE_CORE_MULTI is set, the MBUF can be 
+ * used with multiple cores 
+ *  
+ * having an MBUF set as core-local will allow us to skip 
+ * atomic checks 
+ * 
+ * WARNING don't change the NUMBERS orders 0,1,2
+ */
+typedef enum {
+    RTE_MBUF_CORE_LOCALITY_MULTI = 0,
+    RTE_MBUF_CORE_LOCALITY_LOCAL = 1,
+    RTE_MBUF_CORE_LOCALITY_CONST = 2,
+} mbuf_type_e;
+
+static inline void
+rte_mbuf_set_as_core_local(struct rte_mbuf *m) {
+    m->m_core_locality = RTE_MBUF_CORE_LOCALITY_LOCAL;
+}
+
+static inline void
+rte_mbuf_set_as_core_const(struct rte_mbuf *m) {
+    m->m_core_locality = RTE_MBUF_CORE_LOCALITY_CONST;
+}
+
+static inline void
+rte_mbuf_set_as_core_multi(struct rte_mbuf *m) {
+    m->m_core_locality = RTE_MBUF_CORE_LOCALITY_MULTI;
+}
+
+#else
+
+static inline void
+rte_mbuf_set_as_core_local(struct rte_mbuf *m) {
+}
+
+static inline void
+rte_mbuf_set_as_core_const(struct rte_mbuf *m) {
+}
+
+static inline void
+rte_mbuf_set_as_core_multi(struct rte_mbuf *m) {
+}
+
+#endif
+
 
 /**
  * Function typedef of callback to free externally attached buffer.

@@ -1889,6 +1889,27 @@ i40e_dev_configure(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
 		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
+#ifdef TREX_PATCH
+
+	/* Only legacy filter API needs the following fdir config. So when the
+	 * legacy filter API is deprecated, the following codes should also be
+	 * removed.
+	 */
+	if (dev->data->dev_conf.fdir_conf.mode == RTE_FDIR_MODE_PERFECT) {
+		ret = trex_i40e_fdir_setup(pf, dev);
+		if (ret != I40E_SUCCESS) {
+			PMD_DRV_LOG(ERR, "Failed to setup flow director.");
+			return -ENOTSUP;
+		}
+		ret = trex_i40e_fdir_configure(dev);
+		if (ret < 0) {
+			PMD_DRV_LOG(ERR, "failed to configure fdir.");
+			goto err;
+		}
+	} else
+		i40e_fdir_teardown(pf);
+#endif
+
 	ret = i40e_dev_init_vlan(dev);
 	if (ret < 0)
 		goto err;
@@ -1987,7 +2008,11 @@ __vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t msix_vect,
 	/* Bind all RX queues to allocated MSIX interrupt */
 	for (i = 0; i < nb_queue; i++) {
 		val = (msix_vect << I40E_QINT_RQCTL_MSIX_INDX_SHIFT) |
+#ifdef TREX_PATCH
+            I40E_QINT_RQCTL_ITR_INDX_MASK |
+#else
 			itr_idx << I40E_QINT_RQCTL_ITR_INDX_SHIFT |
+#endif
 			((base_queue + i + 1) <<
 			 I40E_QINT_RQCTL_NEXTQ_INDX_SHIFT) |
 			(0 << I40E_QINT_RQCTL_NEXTQ_TYPE_SHIFT) |
@@ -2626,7 +2651,13 @@ i40e_dev_close(struct rte_eth_dev *dev)
 
 	/* Clear PXE mode */
 	i40e_clear_pxe_mode(hw);
-
+#ifdef TREX_PATCH
+    // return removed in DPDK 17.02 disable of lldp
+	/* Disable LLDP */
+	ret = i40e_aq_stop_lldp(hw, true,true, NULL);
+	if (ret != I40E_SUCCESS) /* Its failure can be ignored */
+		PMD_INIT_LOG(INFO, "Failed to stop lldp");
+#endif
 	/* Unconfigure filter control */
 	memset(&settings, 0, sizeof(settings));
 	ret = i40e_set_filter_control(hw, &settings);
@@ -3357,6 +3388,11 @@ i40e_read_stats_registers(struct i40e_pf *pf, struct i40e_hw *hw)
 	i40e_stat_update_32(hw, I40E_GLQF_PCNT(pf->fdir.match_counter_index),
 			   pf->offset_loaded,
 			   &os->fd_sb_match, &ns->fd_sb_match);
+#ifndef TREX_PATCH
+	i40e_stat_update_32(hw, I40E_GLQF_PCNT(pf->fdir.match_counter_index),
+			   pf->offset_loaded,
+			   &os->fd_sb_match, &ns->fd_sb_match);
+#endif
 	/* GLPRT_MSPDC not supported */
 	/* GLPRT_XEC not supported */
 
@@ -5361,10 +5397,18 @@ i40e_veb_setup(struct i40e_pf *pf, struct i40e_vsi *vsi)
 	/* create floating veb if vsi is NULL */
 	if (vsi != NULL) {
 		ret = i40e_aq_add_veb(hw, veb->uplink_seid, vsi->seid,
+#ifdef TREX_PATCH_LOW_LATENCY
+                      vsi->enabled_tc, false,
+#else
 				      I40E_DEFAULT_TCMAP, false,
+#endif
 				      &veb->seid, false, NULL);
 	} else {
+#ifdef TREX_PATCH_LOW_LATENCY
+        ret = i40e_aq_add_veb(hw, 0, 0, vsi->enabled_tc,
+#else
 		ret = i40e_aq_add_veb(hw, 0, 0, I40E_DEFAULT_TCMAP,
+#endif
 				      true, &veb->seid, false, NULL);
 	}
 
@@ -5524,7 +5568,55 @@ i40e_update_default_filter_setting(struct i40e_vsi *vsi)
 	filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
 	return i40e_vsi_add_mac(vsi, &filter);
 }
+#ifdef TREX_PATCH_LOW_LATENCY
+static int
+i40e_vsi_update_tc_max_bw(struct i40e_vsi *vsi, u16 credit){
+    struct i40e_hw *hw = I40E_VSI_TO_HW(vsi);
+    int ret;
+    if (!vsi->seid) {
+        PMD_DRV_LOG(ERR, "seid not valid");
+        return -EINVAL;
+    }
 
+    ret = i40e_aq_config_vsi_bw_limit(hw, vsi->seid, credit,0, NULL);
+    if (ret != I40E_SUCCESS) {
+        PMD_DRV_LOG(ERR, "Failed to configure TC BW");
+        return ret;
+    }
+    return (0);
+}
+
+static int
+i40e_vsi_update_tc_bandwidth_ex(struct i40e_vsi *vsi)
+{
+	struct i40e_hw *hw = I40E_VSI_TO_HW(vsi);
+	int i, ret;
+    struct i40e_aqc_configure_vsi_ets_sla_bw_data tc_bw_data;
+    struct i40e_aqc_configure_vsi_tc_bw_data * res_buffer;
+
+	if (!vsi->seid) {
+		PMD_DRV_LOG(ERR, "seid not valid");
+		return -EINVAL;
+	}
+
+	memset(&tc_bw_data, 0, sizeof(tc_bw_data));
+	tc_bw_data.tc_valid_bits = 3;
+
+    /* enable TC 0,1 */
+	ret = i40e_aq_config_vsi_ets_sla_bw_limit(hw, vsi->seid, &tc_bw_data, NULL);
+	if (ret != I40E_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to configure TC BW");
+		return ret;
+	}
+    
+    vsi->enabled_tc=3;
+    res_buffer = ( struct i40e_aqc_configure_vsi_tc_bw_data *)&tc_bw_data;
+    (void)rte_memcpy(vsi->info.qs_handle, res_buffer->qs_handles,
+					sizeof(vsi->info.qs_handle));
+
+	return I40E_SUCCESS;
+}
+#endif
 /*
  * i40e_vsi_get_bw_config - Query VSI BW Information
  * @vsi: the VSI to be queried
@@ -5601,7 +5693,12 @@ i40e_enable_pf_lb(struct i40e_pf *pf)
 
 	/* Use the FW API if FW >= v5.0 */
 	if (hw->aq.fw_maj_ver < 5 && hw->mac.type != I40E_MAC_X722) {
+#ifdef TREX_PATCH
+        // Most of our customers do not have latest FW
+        PMD_INIT_LOG(INFO, "FW < v5.0, cannot enable loopback");
+#else
 		PMD_INIT_LOG(ERR, "FW < v5.0, cannot enable loopback");
+#endif
 		return;
 	}
 
@@ -6914,7 +7011,7 @@ i40e_dev_interrupt_handler(void *param)
 	if (icr0 & I40E_PFINT_ICR0_STORM_DETECT_MASK)
 		PMD_DRV_LOG(INFO, "ICR0: a change in the storm control state");
 	if (icr0 & I40E_PFINT_ICR0_HMC_ERR_MASK)
-		PMD_DRV_LOG(ERR, "ICR0: HMC error");
+		PMD_DRV_LOG(INFO, "ICR0: HMC error");
 	if (icr0 & I40E_PFINT_ICR0_PE_CRITERR_MASK)
 		PMD_DRV_LOG(ERR, "ICR0: protocol engine critical error");
 
@@ -9861,7 +9958,7 @@ i40e_ethertype_filter_set(struct i40e_pf *pf,
 	}
 	if (filter->ether_type == RTE_ETHER_TYPE_IPV4 ||
 		filter->ether_type == RTE_ETHER_TYPE_IPV6) {
-		PMD_DRV_LOG(ERR,
+		PMD_DRV_LOG(INFO,
 			"unsupported ether_type(0x%04x) in control packet filter.",
 			filter->ether_type);
 		return -EINVAL;
@@ -9881,7 +9978,7 @@ i40e_ethertype_filter_set(struct i40e_pf *pf,
 	}
 
 	if (!add && !node) {
-		PMD_DRV_LOG(ERR, "There's no corresponding ethertype filter!");
+		//PMD_DRV_LOG(ERR, "There's no corresponding ethertype filter!");
 		return -EINVAL;
 	}
 
@@ -10932,7 +11029,7 @@ i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 	int i, ret = 0;
 
 	if ((pf->flags & I40E_FLAG_DCB) == 0) {
-		PMD_INIT_LOG(ERR, "HW doesn't support DCB");
+		PMD_INIT_LOG(INFO, "HW doesn't support DCB");
 		return -ENOTSUP;
 	}
 
@@ -10966,9 +11063,15 @@ i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 			hw->local_dcbx_config.etscfg.tcbwtable[0] = 100;
 			hw->local_dcbx_config.etscfg.tsatable[0] =
 						I40E_IEEE_TSA_ETS;
+#ifdef TREX_PATCH_LOW_LATENCY
+			hw->local_dcbx_config.etscfg.tcbwtable[1] = 0;
+			hw->local_dcbx_config.etscfg.tsatable[1] = I40E_IEEE_TSA_STRICT;
+			hw->local_dcbx_config.etscfg.prioritytable[1] = 1;
+#else
 			/* all UPs mapping to TC0 */
 			for (i = 0; i < I40E_MAX_USER_PRIORITY; i++)
 				hw->local_dcbx_config.etscfg.prioritytable[i] = 0;
+#endif
 			hw->local_dcbx_config.etsrec =
 				hw->local_dcbx_config.etscfg;
 			hw->local_dcbx_config.pfc.willing = 0;
@@ -10988,8 +11091,15 @@ i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 					ret, hw->aq.asq_last_status);
 				return -ENOSYS;
 			}
+#ifdef TREX_PATCH_LOW_LATENCY
+            if (i40e_vsi_update_tc_bandwidth_ex(pf->main_vsi) !=
+                I40E_SUCCESS) {
+                PMD_DRV_LOG(ERR, "Failed to update TC bandwidth");
+                return -ENOSYS;
+            }
+#endif
 		} else {
-			PMD_INIT_LOG(ERR,
+			PMD_INIT_LOG(INFO,
 				"DCB initialization in FW fails, err = %d, aq_err = %d.",
 				ret, hw->aq.asq_last_status);
 			return -ENOTSUP;
@@ -11008,12 +11118,12 @@ i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 		ret = i40e_init_dcb(hw, true);
 		if (!ret) {
 			if (hw->dcbx_status == I40E_DCBX_STATUS_DISABLED) {
-				PMD_INIT_LOG(ERR,
+				PMD_INIT_LOG(INFO,
 					"HW doesn't support DCBX offload.");
 				return -ENOTSUP;
 			}
 		} else {
-			PMD_INIT_LOG(ERR,
+			PMD_INIT_LOG(INFO,
 				"DCBX configuration failed, err = %d, aq_err = %d.",
 				ret, hw->aq.asq_last_status);
 			return -ENOTSUP;

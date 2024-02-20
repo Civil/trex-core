@@ -746,6 +746,10 @@ struct i40e_fdir_info {
 	uint16_t match_counter_index;  /* Statistic counter index used for fdir*/
 	struct i40e_tx_queue *txq;
 	struct i40e_rx_queue *rxq;
+#ifdef TREX_PATCH
+	void *prg_pkt_fdir;                 /* memory for fdir program packet */
+	uint64_t dma_addr_fdir;             /* physic address of packet memory*/
+#endif 
 	void *prg_pkt[I40E_FDIR_PRG_PKT_CNT];     /* memory for fdir program packet */
 	uint64_t dma_addr[I40E_FDIR_PRG_PKT_CNT]; /* physic address of packet memory*/
 	/*
@@ -1325,11 +1329,13 @@ uint64_t i40e_parse_hena(const struct i40e_adapter *adapter, uint64_t flags);
 enum i40e_status_code i40e_fdir_setup_tx_resources(struct i40e_pf *pf);
 enum i40e_status_code i40e_fdir_setup_rx_resources(struct i40e_pf *pf);
 int i40e_fdir_setup(struct i40e_pf *pf);
+int trex_i40e_fdir_setup(struct i40e_pf *pf, struct rte_eth_dev *dev);
 void i40e_vsi_enable_queues_intr(struct i40e_vsi *vsi);
 const struct rte_memzone *i40e_memzone_reserve(const char *name,
 					uint32_t len,
 					int socket_id);
 int i40e_fdir_configure(struct rte_eth_dev *dev);
+int trex_i40e_fdir_configure(struct rte_eth_dev *dev);
 void i40e_fdir_rx_proc_enable(struct rte_eth_dev *dev, bool on);
 void i40e_fdir_teardown(struct i40e_pf *pf);
 enum i40e_filter_pctype

@@ -2062,6 +2062,8 @@ struct rte_eth_tunnel_filter_conf {
 	uint16_t queue_id;      /**< Queue assigned to if match */
 };
 
+#ifndef TREX_PATCH
+
 /**
  *  Memory space that can be configured to store Flow Director filters
  *  in the board memory.
@@ -2097,6 +2099,8 @@ struct rte_eth_fdir_conf {
 	/** Flex payload configuration. */
 	struct rte_eth_fdir_flex_conf flex_conf;
 };
+
+#endif
 
 #ifdef __cplusplus
 }

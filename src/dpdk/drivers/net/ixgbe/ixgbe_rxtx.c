@@ -33,7 +33,9 @@
 #include <rte_mbuf.h>
 #include <rte_ether.h>
 #include <ethdev_driver.h>
+#ifdef RTE_LIB_SECURITY
 #include <rte_security_driver.h>
+#endif
 #include <rte_prefetch.h>
 #include <rte_udp.h>
 #include <rte_tcp.h>
@@ -856,9 +858,15 @@ ixgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 					txe->mbuf = NULL;
 				}
 
+#ifdef RTE_LIB_SECURITY 
 				ixgbe_set_xmit_ctx(txq, ctx_txd, tx_ol_req,
 					tx_offload,
 					rte_security_dynfield(tx_pkt));
+#else 
+				ixgbe_set_xmit_ctx(txq, ctx_txd, tx_ol_req,
+					tx_offload,
+					(uint64_t *)0);
+#endif	
 
 				txe->last_id = tx_last;
 				tx_id = txe->next_id;
@@ -5551,7 +5559,7 @@ ixgbe_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		rxdctl = IXGBE_READ_REG(hw, IXGBE_RXDCTL(rxq->reg_idx));
 	} while (--poll_ms && (rxdctl & IXGBE_RXDCTL_ENABLE));
 	if (!poll_ms)
-		PMD_INIT_LOG(ERR, "Could not disable Rx Queue %d", rx_queue_id);
+		PMD_INIT_LOG(DEBUG, "Could not disable Rx Queue %d", rx_queue_id);
 
 	rte_delay_us(RTE_IXGBE_WAIT_100_US);
 

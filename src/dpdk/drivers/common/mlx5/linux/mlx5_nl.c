@@ -23,7 +23,12 @@
 #include "../mlx5_common_log.h"
 #include "mlx5_malloc.h"
 #ifdef HAVE_DEVLINK
+#ifdef HAVE_DEVLINK_DUMMY
+#include <linux_devlink/devlink.h>
+#include <linux_devlink/devlink.h>
+#else 
 #include <linux/devlink.h>
+#endif
 #endif
 
 
