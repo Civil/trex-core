@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright(c) 2018 Intel Corporation
+# Copyright(c) 2023 Ericsson AB
 
 if is_windows
     build = false
@@ -7,5 +7,7 @@ if is_windows
     subdir_done()
 endif
 
-deps += 'kni'
-sources = files('rte_eth_kni.c')
+sources = files('rte_dispatcher.c')
+headers = files('rte_dispatcher.h')
+
+deps += ['eventdev']

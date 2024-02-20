@@ -694,7 +694,13 @@ eth_af_xdp_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 static int
 eth_dev_start(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	}
 
 	return 0;
 }
@@ -703,7 +709,14 @@ eth_dev_start(struct rte_eth_dev *dev)
 static int
 eth_dev_stop(struct rte_eth_dev *dev)
 {
+	uint16_t i;
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	}
+
 	return 0;
 }
 
@@ -979,7 +992,7 @@ eth_dev_close(struct rte_eth_dev *dev)
 			break;
 		xsk_socket__delete(rxq->xsk);
 
-		if (__atomic_sub_fetch(&rxq->umem->refcnt, 1, __ATOMIC_ACQUIRE)
+		if (__atomic_fetch_sub(&rxq->umem->refcnt, 1, __ATOMIC_ACQUIRE) - 1
 				== 0) {
 			(void)xsk_umem__delete(rxq->umem->umem);
 			xdp_umem_destroy(rxq->umem);
@@ -1710,7 +1723,7 @@ xsk_configure(struct pmd_internals *internals, struct pkt_rx_queue *rxq,
 out_xsk:
 	xsk_socket__delete(rxq->xsk);
 out_umem:
-	if (__atomic_sub_fetch(&rxq->umem->refcnt, 1, __ATOMIC_ACQUIRE) == 0)
+	if (__atomic_fetch_sub(&rxq->umem->refcnt, 1, __ATOMIC_ACQUIRE) - 1 == 0)
 		xdp_umem_destroy(rxq->umem);
 
 	return ret;
@@ -2386,7 +2399,7 @@ rte_pmd_af_xdp_probe(struct rte_vdev_device *dev)
 
 		snprintf(numa_path, sizeof(numa_path), "/sys/class/net/%s/device/numa_node",
 			 if_name);
-		if (eal_parse_sysfs_value(numa_path, &numa) != 0)
+		if (access(numa_path, R_OK) != 0 || eal_parse_sysfs_value(numa_path, &numa) != 0)
 			dev->device.numa_node = rte_socket_id();
 		else
 			dev->device.numa_node = numa;

@@ -1,32 +1,22 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2014, 2015 Netronome Systems, Inc.
+ * Copyright (c) 2023 Corigine, Inc.
  * All rights reserved.
  */
 
-/*
- * vim:shiftwidth=8:noexpandtab
- *
- * Netronome network device driver: Control BAR layout
- */
-#ifndef _NFP_CTRL_H_
-#define _NFP_CTRL_H_
+#ifndef __NFP_COMMON_CTRL_H__
+#define __NFP_COMMON_CTRL_H__
 
 /*
  * Configuration BAR size.
  *
- * The configuration BAR is 8K in size, but on the NFP6000, due to
- * THB-350, 32k needs to be reserved.
+ * On the NFP6000, due to THB-350, the configuration BAR is 32K in size.
  */
-#ifdef __NFP_IS_6000
 #define NFP_NET_CFG_BAR_SZ              (32 * 1024)
-#else
-#define NFP_NET_CFG_BAR_SZ              (8 * 1024)
-#endif
 
 /* Offset in Freelist buffer where packet starts on RX */
 #define NFP_NET_RX_OFFSET               32
 
-/* working with metadata api (NFD version > 3.0) */
+/* Working with metadata api (NFD version > 3.0) */
 #define NFP_NET_META_FIELD_SIZE         4
 #define NFP_NET_META_FIELD_MASK ((1 << NFP_NET_META_FIELD_SIZE) - 1)
 #define NFP_NET_META_HEADER_SIZE        4
@@ -42,10 +32,14 @@
 						NFP_NET_META_VLAN_TPID_MASK)
 
 /* Prepend field types */
-#define NFP_NET_META_HASH               1 /* next field carries hash type */
+#define NFP_NET_META_HASH               1 /* Next field carries hash type */
 #define NFP_NET_META_VLAN               4
+#define NFP_NET_META_PORTID             5
+#define NFP_NET_META_IPSEC              9
 
-/* Hash type pre-pended when a RSS hash was computed */
+#define NFP_META_PORT_ID_CTRL           ~0U
+
+/* Hash type prepended when a RSS hash was computed */
 #define NFP_NET_RSS_NONE                0
 #define NFP_NET_RSS_IPV4                1
 #define NFP_NET_RSS_IPV6                2
@@ -104,7 +98,7 @@
 #define   NFP_NET_CFG_CTRL_IRQMOD         (0x1 << 18) /* Interrupt moderation */
 #define   NFP_NET_CFG_CTRL_RINGPRIO       (0x1 << 19) /* Ring priorities */
 #define   NFP_NET_CFG_CTRL_MSIXAUTO       (0x1 << 20) /* MSI-X auto-masking */
-#define   NFP_NET_CFG_CTRL_TXRWB          (0x1 << 21) /* Write-back of TX ring*/
+#define   NFP_NET_CFG_CTRL_TXRWB          (0x1 << 21) /* Write-back of TX ring */
 #define   NFP_NET_CFG_CTRL_L2SWITCH       (0x1 << 22) /* L2 Switch */
 #define   NFP_NET_CFG_CTRL_TXVLAN_V2      (0x1 << 23) /* Enable VLAN insert with metadata */
 #define   NFP_NET_CFG_CTRL_VXLAN          (0x1 << 24) /* Enable VXLAN */
@@ -113,7 +107,7 @@
 #define   NFP_NET_CFG_CTRL_LSO2           (0x1 << 28) /* LSO/TSO (version 2) */
 #define   NFP_NET_CFG_CTRL_RSS2           (0x1 << 29) /* RSS (version 2) */
 #define   NFP_NET_CFG_CTRL_CSUM_COMPLETE  (0x1 << 30) /* Checksum complete */
-#define   NFP_NET_CFG_CTRL_LIVE_ADDR      (0x1U << 31)/* live MAC addr change */
+#define   NFP_NET_CFG_CTRL_LIVE_ADDR      (0x1U << 31) /* Live MAC addr change */
 #define NFP_NET_CFG_UPDATE              0x0004
 #define   NFP_NET_CFG_UPDATE_GEN          (0x1 <<  0) /* General update */
 #define   NFP_NET_CFG_UPDATE_RING         (0x1 <<  1) /* Ring config change */
@@ -126,6 +120,7 @@
 #define   NFP_NET_CFG_UPDATE_IRQMOD       (0x1 <<  8) /* IRQ mod change */
 #define   NFP_NET_CFG_UPDATE_VXLAN        (0x1 <<  9) /* VXLAN port change */
 #define   NFP_NET_CFG_UPDATE_MACADDR      (0x1 << 11) /* MAC address change */
+#define   NFP_NET_CFG_UPDATE_MBOX         (0x1 << 12) /* Mailbox update */
 #define   NFP_NET_CFG_UPDATE_ERR          (0x1U << 31) /* A error occurred */
 #define NFP_NET_CFG_TXRS_ENABLE         0x0008
 #define NFP_NET_CFG_RXRS_ENABLE         0x0010
@@ -140,6 +135,20 @@
 
 #define NFP_NET_CFG_CTRL_CHAIN_META (NFP_NET_CFG_CTRL_RSS2 | \
 					NFP_NET_CFG_CTRL_CSUM_COMPLETE)
+
+/* Version number helper defines */
+struct nfp_net_fw_ver {
+	uint8_t minor;
+	uint8_t major;
+	uint8_t class;
+	/**
+	 * This byte can be extended for more use.
+	 * BIT0: NFD dp type, refer NFP_NET_CFG_VERSION_DP_NFDx
+	 * BIT[7:1]: reserved
+	 */
+	uint8_t extend;
+};
+
 /*
  * Read-only words (0x0030 - 0x0050):
  * @NFP_NET_CFG_VERSION:     Firmware version number
@@ -157,14 +166,6 @@
 #define NFP_NET_CFG_VERSION             0x0030
 #define   NFP_NET_CFG_VERSION_DP_NFD3   0
 #define   NFP_NET_CFG_VERSION_DP_NFDK   1
-#define   NFP_NET_CFG_VERSION_RESERVED_MASK	(0xff << 24)
-#define   NFP_NET_CFG_VERSION_CLASS_MASK  (0xff << 16)
-#define   NFP_NET_CFG_VERSION_CLASS(x)    (((x) & 0xff) << 16)
-#define   NFP_NET_CFG_VERSION_CLASS_GENERIC	0
-#define   NFP_NET_CFG_VERSION_MAJOR_MASK  (0xff <<  8)
-#define   NFP_NET_CFG_VERSION_MAJOR(x)    (((x) & 0xff) <<  8)
-#define   NFP_NET_CFG_VERSION_MINOR_MASK  (0xff <<  0)
-#define   NFP_NET_CFG_VERSION_MINOR(x)    (((x) & 0xff) <<  0)
 #define NFP_NET_CFG_STS                 0x0034
 #define   NFP_NET_CFG_STS_LINK            (0x1 << 0) /* Link up or down */
 /* Link rate */
@@ -196,27 +197,13 @@
 #define NFP_NET_CFG_START_RXQ           0x004c
 
 /*
- * NFP-3200 workaround (0x0050 - 0x0058)
- * @NFP_NET_CFG_SPARE_ADDR:  DMA address for ME code to use (e.g. YDS-155 fix)
- */
-#define NFP_NET_CFG_SPARE_ADDR          0x0050
-/**
  * NFP6000/NFP4000 - Prepend configuration
  */
-#define NFP_NET_CFG_RX_OFFSET		0x0050
-#define NFP_NET_CFG_RX_OFFSET_DYNAMIC		0	/* Prepend mode */
+#define NFP_NET_CFG_RX_OFFSET           0x0050
+#define NFP_NET_CFG_RX_OFFSET_DYNAMIC          0    /* Prepend mode */
 
-/**
- * Reuse spare address to contain the offset from the start of
- * the host buffer where the first byte of the received frame
- * will land.  Any metadata will come prior to that offset.  If the
- * value in this field is 0, it means that the metadata will
- * always land starting at the first byte of the host buffer and
- * packet data will immediately follow the metadata.  As always,
- * the RX descriptor indicates the presence or absence of metadata
- * along with the length thereof.
- */
-#define NFP_NET_CFG_RX_OFFSET_ADDR      0x0050
+/* Start anchor of the TLV area */
+#define NFP_NET_CFG_TLV_BASE            0x0058
 
 #define NFP_NET_CFG_VXLAN_PORT          0x0060
 #define NFP_NET_CFG_VXLAN_SZ            0x0008
@@ -224,11 +211,25 @@
 /* Offload definitions */
 #define NFP_NET_N_VXLAN_PORTS  (NFP_NET_CFG_VXLAN_SZ / sizeof(uint16_t))
 
-/**
- * 64B reserved for future use (0x0080 - 0x00c0)
+/*
+ * 3 words reserved for extended ctrl words (0x0098 - 0x00a4)
+ * 3 words reserved for extended cap words (0x00a4 - 0x00b0)
+ * Currently only one word is used, can be extended in future.
  */
-#define NFP_NET_CFG_RESERVED            0x0080
-#define NFP_NET_CFG_RESERVED_SZ         0x0040
+#define NFP_NET_CFG_CTRL_WORD1          0x0098
+#define NFP_NET_CFG_CTRL_PKT_TYPE         (0x1 << 0)
+#define NFP_NET_CFG_CTRL_IPSEC            (0x1 << 1) /**< IPsec offload */
+#define NFP_NET_CFG_CTRL_MCAST_FILTER     (0x1 << 2) /**< Multicast Filter */
+#define NFP_NET_CFG_CTRL_IPSEC_SM_LOOKUP  (0x1 << 3) /**< SA short match lookup */
+#define NFP_NET_CFG_CTRL_IPSEC_LM_LOOKUP  (0x1 << 4) /**< SA long match lookup */
+#define NFP_NET_CFG_CTRL_MULTI_PF         (0x1 << 5)
+#define NFP_NET_CFG_CTRL_IN_ORDER         (0x1 << 11) /**< Virtio in-order flag */
+
+#define NFP_NET_CFG_CAP_WORD1           0x00a4
+
+/* 16B reserved for future use (0x00b0 - 0x00c0). */
+#define NFP_NET_CFG_RESERVED            0x00b0
+#define NFP_NET_CFG_RESERVED_SZ         0x0010
 
 /*
  * RSS configuration (0x0100 - 0x01ac):
@@ -261,7 +262,7 @@
  * @NFP_NET_CFG_TXR_BASE:    Base offset for TX ring configuration
  * @NFP_NET_CFG_TXR_ADDR:    Per TX ring DMA address (8B entries)
  * @NFP_NET_CFG_TXR_WB_ADDR: Per TX ring write back DMA address (8B entries)
- * @NFP_NET_CFG_TXR_SZ:      Per TX ring ring size (1B entries)
+ * @NFP_NET_CFG_TXR_SZ:      Per TX ring size (1B entries)
  * @NFP_NET_CFG_TXR_VEC:     Per TX ring MSI-X table entry (1B entries)
  * @NFP_NET_CFG_TXR_PRIO:    Per TX ring priority (1B entries)
  * @NFP_NET_CFG_TXR_IRQ_MOD: Per TX ring interrupt moderation (4B entries)
@@ -280,7 +281,7 @@
  * RX ring configuration (0x0800 - 0x0c00)
  * @NFP_NET_CFG_RXR_BASE:    Base offset for RX ring configuration
  * @NFP_NET_CFG_RXR_ADDR:    Per TX ring DMA address (8B entries)
- * @NFP_NET_CFG_RXR_SZ:      Per TX ring ring size (1B entries)
+ * @NFP_NET_CFG_RXR_SZ:      Per TX ring size (1B entries)
  * @NFP_NET_CFG_RXR_VEC:     Per TX ring MSI-X table entry (1B entries)
  * @NFP_NET_CFG_RXR_PRIO:    Per TX ring priority (1B entries)
  * @NFP_NET_CFG_RXR_IRQ_MOD: Per TX ring interrupt moderation (4B entries)
@@ -311,7 +312,7 @@
 
 /*
  * General device stats (0x0d00 - 0x0d90)
- * all counters are 64bit.
+ * All counters are 64bit.
  */
 #define NFP_NET_CFG_STATS_BASE          0x0d00
 #define NFP_NET_CFG_STATS_RX_DISCARDS   (NFP_NET_CFG_STATS_BASE + 0x00)
@@ -334,9 +335,18 @@
 #define NFP_NET_CFG_STATS_TX_MC_FRAMES  (NFP_NET_CFG_STATS_BASE + 0x80)
 #define NFP_NET_CFG_STATS_TX_BC_FRAMES  (NFP_NET_CFG_STATS_BASE + 0x88)
 
+#define NFP_NET_CFG_STATS_APP0_FRAMES   (NFP_NET_CFG_STATS_BASE + 0x90)
+#define NFP_NET_CFG_STATS_APP0_BYTES    (NFP_NET_CFG_STATS_BASE + 0x98)
+#define NFP_NET_CFG_STATS_APP1_FRAMES   (NFP_NET_CFG_STATS_BASE + 0xa0)
+#define NFP_NET_CFG_STATS_APP1_BYTES    (NFP_NET_CFG_STATS_BASE + 0xa8)
+#define NFP_NET_CFG_STATS_APP2_FRAMES   (NFP_NET_CFG_STATS_BASE + 0xb0)
+#define NFP_NET_CFG_STATS_APP2_BYTES    (NFP_NET_CFG_STATS_BASE + 0xb8)
+#define NFP_NET_CFG_STATS_APP3_FRAMES   (NFP_NET_CFG_STATS_BASE + 0xc0)
+#define NFP_NET_CFG_STATS_APP3_BYTES    (NFP_NET_CFG_STATS_BASE + 0xc8)
+
 /*
  * Per ring stats (0x1000 - 0x1800)
- * options, 64bit per entry
+ * Options, 64bit per entry
  * @NFP_NET_CFG_TXR_STATS:   TX ring statistics (Packet and Byte count)
  * @NFP_NET_CFG_RXR_STATS:   RX ring statistics (Packet and Byte count)
  */
@@ -347,26 +357,4 @@
 #define NFP_NET_CFG_RXR_STATS(_x)       (NFP_NET_CFG_RXR_STATS_BASE + \
 					 ((_x) * 0x10))
 
-/* PF multiport offset */
-#define NFP_PF_CSR_SLICE_SIZE	(32 * 1024)
-
-/*
- * nfp_net_cfg_ctrl_rss() - Get RSS flag based on firmware's capability
- * @hw_cap: The firmware's capabilities
- */
-static inline uint32_t
-nfp_net_cfg_ctrl_rss(uint32_t hw_cap)
-{
-	if ((hw_cap & NFP_NET_CFG_CTRL_RSS2) != 0)
-		return NFP_NET_CFG_CTRL_RSS2;
-
-	return NFP_NET_CFG_CTRL_RSS;
-}
-
-#endif /* _NFP_CTRL_H_ */
-/*
- * Local variables:
- * c-file-style: "Linux"
- * indent-tabs-mode: t
- * End:
- */
+#endif /* __NFP_COMMON_CTRL_H__ */

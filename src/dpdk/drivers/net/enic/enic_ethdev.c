@@ -368,6 +368,7 @@ static int enicpmd_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct rte_eth_link link;
 	struct enic *enic = pmd_priv(eth_dev);
+	uint16_t i;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
@@ -377,6 +378,11 @@ static int enicpmd_dev_stop(struct rte_eth_dev *eth_dev)
 
 	memset(&link, 0, sizeof(link));
 	rte_eth_linkstatus_set(eth_dev, &link);
+
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++)
+		eth_dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++)
+		eth_dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 
 	return 0;
 }
@@ -1268,7 +1274,7 @@ static int eth_enic_dev_init(struct rte_eth_dev *eth_dev,
 	enic->pdev = pdev;
 	addr = &pdev->addr;
 
-	snprintf(enic->bdf_name, ENICPMD_BDF_LENGTH, "%04x:%02x:%02x.%x",
+	snprintf(enic->bdf_name, PCI_PRI_STR_SIZE, PCI_PRI_FMT,
 		addr->domain, addr->bus, addr->devid, addr->function);
 
 	err = enic_check_devargs(eth_dev);

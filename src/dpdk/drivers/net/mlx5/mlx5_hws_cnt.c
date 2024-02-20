@@ -9,6 +9,7 @@
 #include <mlx5_devx_cmds.h>
 #include <rte_cycles.h>
 #include <rte_eal_paging.h>
+#include <rte_thread.h>
 
 #if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
 
@@ -192,8 +193,8 @@ mlx5_hws_aging_check(struct mlx5_priv *priv, struct mlx5_hws_cnt_pool *cpool)
 			}
 			param->accumulator_hits = 0;
 		}
-		if (__atomic_add_fetch(&param->sec_since_last_hit, time_delta,
-				       __ATOMIC_RELAXED) <=
+		if (__atomic_fetch_add(&param->sec_since_last_hit, time_delta,
+				       __ATOMIC_RELAXED) + time_delta <=
 		   __atomic_load_n(&param->timeout, __ATOMIC_RELAXED))
 			continue;
 		/* Prepare the relevant ring for this AGE parameter */
@@ -286,39 +287,38 @@ error:
 	return NULL;
 }
 
-static void *
+static uint32_t
 mlx5_hws_cnt_svc(void *opaque)
 {
 	struct mlx5_dev_ctx_shared *sh =
 		(struct mlx5_dev_ctx_shared *)opaque;
 	uint64_t interval =
 		(uint64_t)sh->cnt_svc->query_interval * (US_PER_S / MS_PER_S);
-	uint16_t port_id;
+	struct mlx5_hws_cnt_pool *hws_cpool;
 	uint64_t start_cycle, query_cycle = 0;
 	uint64_t query_us;
 	uint64_t sleep_us;
 
 	while (sh->cnt_svc->svc_running != 0) {
+		if (rte_spinlock_trylock(&sh->cpool_lock) == 0)
+			continue;
 		start_cycle = rte_rdtsc();
-		MLX5_ETH_FOREACH_DEV(port_id, sh->cdev->dev) {
-			struct mlx5_priv *opriv =
-				rte_eth_devices[port_id].data->dev_private;
-			if (opriv != NULL &&
-			    opriv->sh == sh &&
-			    opriv->hws_cpool != NULL) {
-				__mlx5_hws_cnt_svc(sh, opriv->hws_cpool);
-				if (opriv->hws_age_req)
-					mlx5_hws_aging_check(opriv,
-							     opriv->hws_cpool);
-			}
+		/* 200ms for 16M counters. */
+		LIST_FOREACH(hws_cpool, &sh->hws_cpool_list, next) {
+			struct mlx5_priv *opriv = hws_cpool->priv;
+
+			__mlx5_hws_cnt_svc(sh, hws_cpool);
+			if (opriv->hws_age_req)
+				mlx5_hws_aging_check(opriv, hws_cpool);
 		}
 		query_cycle = rte_rdtsc() - start_cycle;
+		rte_spinlock_unlock(&sh->cpool_lock);
 		query_us = query_cycle / (rte_get_timer_hz() / US_PER_S);
 		sleep_us = interval - query_us;
 		if (interval > query_us)
 			rte_delay_us_sleep(sleep_us);
 	}
-	return NULL;
+	return 0;
 }
 
 static void
@@ -419,8 +419,7 @@ mlx5_hws_cnt_pool_init(struct mlx5_dev_ctx_shared *sh,
 		goto error;
 	}
 	for (qidx = 0; qidx < ccfg->q_num; qidx++) {
-		snprintf(mz_name, sizeof(mz_name), "%s_cache/%u", pcfg->name,
-				qidx);
+		snprintf(mz_name, sizeof(mz_name), "%s_qc/%x", pcfg->name, qidx);
 		cntp->cache->qcache[qidx] = rte_ring_create(mz_name, ccfg->size,
 				SOCKET_ID_ANY,
 				RING_F_SP_ENQ | RING_F_SC_DEQ |
@@ -439,38 +438,37 @@ error:
 int
 mlx5_hws_cnt_service_thread_create(struct mlx5_dev_ctx_shared *sh)
 {
-#define CNT_THREAD_NAME_MAX 256
-	char name[CNT_THREAD_NAME_MAX];
-	rte_cpuset_t cpuset;
+	char name[RTE_THREAD_INTERNAL_NAME_SIZE];
+	rte_thread_attr_t attr;
 	int ret;
 	uint32_t service_core = sh->cnt_svc->service_core;
 
-	CPU_ZERO(&cpuset);
+	ret = rte_thread_attr_init(&attr);
+	if (ret != 0)
+		goto error;
+	CPU_SET(service_core, &attr.cpuset);
 	sh->cnt_svc->svc_running = 1;
-	ret = pthread_create(&sh->cnt_svc->service_thread, NULL,
-			mlx5_hws_cnt_svc, sh);
-	if (ret != 0) {
-		DRV_LOG(ERR, "Failed to create HW steering's counter service thread.");
-		return -ENOSYS;
-	}
-	snprintf(name, CNT_THREAD_NAME_MAX - 1, "%s/svc@%d",
-		 sh->ibdev_name, service_core);
-	rte_thread_set_name((rte_thread_t){(uintptr_t)sh->cnt_svc->service_thread},
-		name);
-	CPU_SET(service_core, &cpuset);
-	pthread_setaffinity_np(sh->cnt_svc->service_thread, sizeof(cpuset),
-				&cpuset);
+	ret = rte_thread_create(&sh->cnt_svc->service_thread,
+			&attr, mlx5_hws_cnt_svc, sh);
+	if (ret != 0)
+		goto error;
+	snprintf(name, sizeof(name), "mlx5-cn%d", service_core);
+	rte_thread_set_prefixed_name(sh->cnt_svc->service_thread, name);
+
 	return 0;
+error:
+	DRV_LOG(ERR, "Failed to create HW steering's counter service thread.");
+	return ret;
 }
 
 void
 mlx5_hws_cnt_service_thread_destroy(struct mlx5_dev_ctx_shared *sh)
 {
-	if (sh->cnt_svc->service_thread == 0)
+	if (sh->cnt_svc->service_thread.opaque_id == 0)
 		return;
 	sh->cnt_svc->svc_running = 0;
-	pthread_join(sh->cnt_svc->service_thread, NULL);
-	sh->cnt_svc->service_thread = 0;
+	rte_thread_join(sh->cnt_svc->service_thread, NULL);
+	sh->cnt_svc->service_thread.opaque_id = 0;
 }
 
 static int
@@ -612,12 +610,10 @@ mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,
 	int ret = 0;
 	size_t sz;
 
-	mp_name = mlx5_malloc(MLX5_MEM_ZERO, RTE_MEMZONE_NAMESIZE, 0,
-			SOCKET_ID_ANY);
+	mp_name = mlx5_malloc(MLX5_MEM_ZERO, RTE_MEMZONE_NAMESIZE, 0, SOCKET_ID_ANY);
 	if (mp_name == NULL)
 		goto error;
-	snprintf(mp_name, RTE_MEMZONE_NAMESIZE, "MLX5_HWS_CNT_POOL_%u",
-			dev->data->port_id);
+	snprintf(mp_name, RTE_MEMZONE_NAMESIZE, "MLX5_HWS_CNT_P_%x", dev->data->port_id);
 	pcfg.name = mp_name;
 	pcfg.request_num = pattr->nb_counters;
 	pcfg.alloc_factor = HWS_CNT_ALLOC_FACTOR_DEFAULT;
@@ -668,6 +664,10 @@ mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,
 	if (ret != 0)
 		goto error;
 	priv->sh->cnt_svc->refcnt++;
+	cpool->priv = priv;
+	rte_spinlock_lock(&priv->sh->cpool_lock);
+	LIST_INSERT_HEAD(&priv->sh->hws_cpool_list, cpool, next);
+	rte_spinlock_unlock(&priv->sh->cpool_lock);
 	return cpool;
 error:
 	mlx5_hws_cnt_pool_destroy(priv->sh, cpool);
@@ -680,6 +680,13 @@ mlx5_hws_cnt_pool_destroy(struct mlx5_dev_ctx_shared *sh,
 {
 	if (cpool == NULL)
 		return;
+	/*
+	 * 16M counter consumes 200ms to finish the query.
+	 * Maybe blocked for at most 200ms here.
+	 */
+	rte_spinlock_lock(&sh->cpool_lock);
+	LIST_REMOVE(cpool, next);
+	rte_spinlock_unlock(&sh->cpool_lock);
 	if (cpool->cfg.host_cpool == NULL) {
 		if (--sh->cnt_svc->refcnt == 0)
 			mlx5_hws_cnt_svc_deinit(sh);
@@ -1247,11 +1254,13 @@ mlx5_hws_age_pool_destroy(struct mlx5_priv *priv)
 {
 	struct mlx5_age_info *age_info = GET_PORT_AGE_INFO(priv);
 
+	rte_spinlock_lock(&priv->sh->cpool_lock);
 	MLX5_ASSERT(priv->hws_age_req);
 	mlx5_hws_age_info_destroy(priv);
 	mlx5_ipool_destroy(age_info->ages_ipool);
 	age_info->ages_ipool = NULL;
 	priv->hws_age_req = 0;
+	rte_spinlock_unlock(&priv->sh->cpool_lock);
 }
 
 #endif

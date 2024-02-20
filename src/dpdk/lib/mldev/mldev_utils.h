@@ -15,7 +15,6 @@ extern "C" {
  * ML Device PMD utility API
  *
  * These APIs for the use from ML drivers, user applications shouldn't use them.
- *
  */
 
 #include <rte_compat.h>
@@ -52,22 +51,6 @@ rte_ml_io_type_size_get(enum rte_ml_io_type type);
 __rte_internal
 void
 rte_ml_io_type_to_str(enum rte_ml_io_type type, char *str, int len);
-
-/**
- * @internal
- *
- * Get the name of an ML IO format.
- *
- * @param[in] type
- *	Enumeration of ML IO format.
- * @param[in] str
- *	Address of character array.
- * @param[in] len
- *	Length of character array.
- */
-__rte_internal
-void
-rte_ml_io_format_to_str(enum rte_ml_io_format format, char *str, int len);
 
 /**
  * @internal

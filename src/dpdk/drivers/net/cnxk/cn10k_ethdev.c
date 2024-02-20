@@ -241,6 +241,9 @@ cn10k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 			return rc;
 	}
 
+	/* Set Txq flag for MT_LOCKFREE */
+	txq->flag = !!(dev->tx_offloads & RTE_ETH_TX_OFFLOAD_MT_LOCKFREE);
+
 	/* Store lmt base in tx queue for easy access */
 	txq->lmt_base = nix->lmt_base;
 	txq->io_addr = sq->io_addr;
@@ -259,7 +262,7 @@ cn10k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 
 		txq->cpt_desc = inl_lf->nb_desc * 0.7;
 		txq->sa_base = (uint64_t)dev->outb.sa_base;
-		txq->sa_base |= eth_dev->data->port_id;
+		txq->sa_base |= (uint64_t)eth_dev->data->port_id;
 		PLT_STATIC_ASSERT(ROC_NIX_INL_SA_BASE_ALIGN == BIT_ULL(16));
 	}
 
@@ -352,11 +355,13 @@ cn10k_nix_rx_queue_meta_aura_update(struct rte_eth_dev *eth_dev)
 		rq = &dev->rqs[i];
 		rxq = eth_dev->data->rx_queues[i];
 		rxq->meta_aura = rq->meta_aura_handle;
+		rxq->meta_pool = dev->nix.meta_mempool;
 		/* Assume meta packet from normal aura if meta aura is not setup
 		 */
 		if (!rxq->meta_aura) {
 			rxq_sp = cnxk_eth_rxq_to_sp(rxq);
 			rxq->meta_aura = rxq_sp->qconf.mp->pool_id;
+			rxq->meta_pool = (uintptr_t)rxq_sp->qconf.mp;
 		}
 	}
 	/* Store mempool in lookup mem */
@@ -367,6 +372,10 @@ static int
 cn10k_nix_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t qidx)
 {
 	struct cn10k_eth_txq *txq = eth_dev->data->tx_queues[qidx];
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	uint16_t flags = dev->tx_offload_flags;
+	struct roc_nix *nix = &dev->nix;
+	uint32_t head = 0, tail = 0;
 	int rc;
 
 	rc = cnxk_nix_tx_queue_stop(eth_dev, qidx);
@@ -375,6 +384,15 @@ cn10k_nix_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t qidx)
 
 	/* Clear fc cache pkts to trigger worker stop */
 	txq->fc_cache_pkts = 0;
+
+	if ((flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) && txq->tx_compl.ena) {
+		struct roc_nix_sq *sq = &dev->sqs[qidx];
+		do {
+			handle_tx_completion_pkts(txq, flags & NIX_TX_VWQE_F);
+			roc_nix_sq_head_tail_get(nix, sq->qid, &head, &tail);
+		} while (head != tail);
+	}
+
 	return 0;
 }
 
@@ -623,14 +641,17 @@ cn10k_nix_reassembly_conf_set(struct rte_eth_dev *eth_dev,
 
 	if (!conf->flags) {
 		/* Clear offload flags on disable */
-		dev->rx_offload_flags &= ~NIX_RX_REAS_F;
+		if (!dev->inb.nb_oop)
+			dev->rx_offload_flags &= ~NIX_RX_REAS_F;
+		dev->inb.reass_en = false;
 		return 0;
 	}
 
-	rc = roc_nix_reassembly_configure(conf->timeout_ms,
-				conf->max_frags);
-	if (!rc && dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
+	rc = roc_nix_reassembly_configure(conf->timeout_ms, conf->max_frags);
+	if (!rc && dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY) {
 		dev->rx_offload_flags |= NIX_RX_REAS_F;
+		dev->inb.reass_en = true;
+	}
 
 	return rc;
 }

@@ -541,15 +541,13 @@ struct ice_pf {
 	bool adapter_stopped;
 	struct ice_flow_list flow_list;
 	rte_spinlock_t flow_ops_lock;
-	struct ice_parser_list rss_parser_list;
-	struct ice_parser_list perm_parser_list;
-	struct ice_parser_list dist_parser_list;
 	bool init_link_up;
 	uint64_t old_rx_bytes;
 	uint64_t old_tx_bytes;
 	uint64_t supported_rxdid; /* bitmap for supported RXDID */
 	uint64_t rss_hf;
 	struct ice_tm_conf tm_conf;
+	uint16_t outer_ethertype;
 };
 
 #define ICE_MAX_QUEUE_NUM  2048
@@ -562,7 +560,6 @@ struct ice_devargs {
 	int rx_low_latency;
 	int safe_mode_support;
 	uint8_t proto_xtr_dflt;
-	int pipe_mode_support;
 	uint8_t default_mac_disable;
 	uint8_t proto_xtr[ICE_MAX_QUEUE_NUM];
 	uint8_t pin_idx;
@@ -691,7 +688,7 @@ ice_align_floor(int n)
 {
 	if (n == 0)
 		return 0;
-	return 1 << (sizeof(n) * CHAR_BIT - 1 - __builtin_clz(n));
+	return 1 << (sizeof(n) * CHAR_BIT - 1 - rte_clz32(n));
 }
 
 #define ICE_PHY_TYPE_SUPPORT_50G(phy_type) \

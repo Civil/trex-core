@@ -120,8 +120,7 @@ eal_dynmem_memseg_lists_init(void)
 	max_seglists_per_type = RTE_MAX_MEMSEG_LISTS / n_memtypes;
 
 	if (max_seglists_per_type == 0) {
-		RTE_LOG(ERR, EAL, "Cannot accommodate all memory types, please increase %s\n",
-			RTE_STR(RTE_MAX_MEMSEG_LISTS));
+		RTE_LOG(ERR, EAL, "Cannot accommodate all memory types, please increase RTE_MAX_MEMSEG_LISTS\n");
 		goto out;
 	}
 
@@ -180,8 +179,7 @@ eal_dynmem_memseg_lists_init(void)
 		for (cur_seglist = 0; cur_seglist < n_seglists; cur_seglist++) {
 			if (msl_idx >= RTE_MAX_MEMSEG_LISTS) {
 				RTE_LOG(ERR, EAL,
-					"No more space in memseg lists, please increase %s\n",
-					RTE_STR(RTE_MAX_MEMSEG_LISTS));
+					"No more space in memseg lists, please increase RTE_MAX_MEMSEG_LISTS\n");
 				goto out;
 			}
 			msl = &mcfg->memsegs[msl_idx++];
@@ -253,7 +251,10 @@ eal_dynmem_hugepage_init(void)
 		 */
 		memset(&dummy, 0, sizeof(dummy));
 		dummy.hugepage_sz = hpi->hugepage_sz;
-		if (rte_memseg_list_walk(hugepage_count_walk, &dummy) < 0)
+		/*  memory_hotplug_lock is held during initialization, so it's
+		 *  safe to call thread-unsafe version.
+		 */
+		if (rte_memseg_list_walk_thread_unsafe(hugepage_count_walk, &dummy) < 0)
 			return -1;
 
 		for (i = 0; i < RTE_DIM(dummy.num_pages); i++) {

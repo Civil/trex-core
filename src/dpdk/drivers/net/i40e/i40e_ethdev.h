@@ -746,10 +746,6 @@ struct i40e_fdir_info {
 	uint16_t match_counter_index;  /* Statistic counter index used for fdir*/
 	struct i40e_tx_queue *txq;
 	struct i40e_rx_queue *rxq;
-#ifdef TREX_PATCH
-	void *prg_pkt_fdir;                 /* memory for fdir program packet */
-	uint64_t dma_addr_fdir;             /* physic address of packet memory*/
-#endif 
 	void *prg_pkt[I40E_FDIR_PRG_PKT_CNT];     /* memory for fdir program packet */
 	uint64_t dma_addr[I40E_FDIR_PRG_PKT_CNT]; /* physic address of packet memory*/
 	/*
@@ -1329,13 +1325,11 @@ uint64_t i40e_parse_hena(const struct i40e_adapter *adapter, uint64_t flags);
 enum i40e_status_code i40e_fdir_setup_tx_resources(struct i40e_pf *pf);
 enum i40e_status_code i40e_fdir_setup_rx_resources(struct i40e_pf *pf);
 int i40e_fdir_setup(struct i40e_pf *pf);
-int trex_i40e_fdir_setup(struct i40e_pf *pf, struct rte_eth_dev *dev);
 void i40e_vsi_enable_queues_intr(struct i40e_vsi *vsi);
 const struct rte_memzone *i40e_memzone_reserve(const char *name,
 					uint32_t len,
 					int socket_id);
 int i40e_fdir_configure(struct rte_eth_dev *dev);
-int trex_i40e_fdir_configure(struct rte_eth_dev *dev);
 void i40e_fdir_rx_proc_enable(struct rte_eth_dev *dev, bool on);
 void i40e_fdir_teardown(struct i40e_pf *pf);
 enum i40e_filter_pctype
@@ -1361,6 +1355,8 @@ void i40e_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_rxq_info *qinfo);
 void i40e_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
+void i40e_recycle_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
+	struct rte_eth_recycle_rxq_info *recycle_rxq_info);
 int i40e_rx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
 			   struct rte_eth_burst_mode *mode);
 int i40e_tx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
@@ -1436,6 +1432,7 @@ int i40e_pf_calc_configured_queues_num(struct i40e_pf *pf);
 int i40e_pf_reset_rss_reta(struct i40e_pf *pf);
 int i40e_pf_reset_rss_key(struct i40e_pf *pf);
 int i40e_pf_config_rss(struct i40e_pf *pf);
+int i40e_pf_set_source_prune(struct i40e_pf *pf, int on);
 int i40e_set_rss_key(struct i40e_vsi *vsi, uint8_t *key, uint8_t key_len);
 int i40e_set_rss_lut(struct i40e_vsi *vsi, uint8_t *lut, uint16_t lut_size);
 int i40e_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params);
@@ -1497,7 +1494,7 @@ i40e_align_floor(int n)
 {
 	if (n == 0)
 		return 0;
-	return 1 << (sizeof(n) * CHAR_BIT - 1 - __builtin_clz(n));
+	return 1 << (sizeof(n) * CHAR_BIT - 1 - rte_clz32(n));
 }
 
 static inline uint16_t

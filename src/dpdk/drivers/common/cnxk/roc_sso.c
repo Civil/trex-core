@@ -5,7 +5,9 @@
 #include "roc_api.h"
 #include "roc_priv.h"
 
-#define SSO_XAQ_CACHE_CNT (0x7)
+#define SSO_XAQ_CACHE_CNT (0x3)
+#define SSO_XAQ_RSVD_CNT  (0x4)
+#define SSO_XAQ_SLACK	  (16)
 
 /* Private functions. */
 int
@@ -184,8 +186,8 @@ exit:
 }
 
 void
-sso_hws_link_modify(uint8_t hws, uintptr_t base, struct plt_bitmap *bmp,
-		    uint16_t hwgrp[], uint16_t n, uint16_t enable)
+sso_hws_link_modify(uint8_t hws, uintptr_t base, struct plt_bitmap *bmp, uint16_t hwgrp[],
+		    uint16_t n, uint8_t set, uint16_t enable)
 {
 	uint64_t reg;
 	int i, j, k;
@@ -202,7 +204,7 @@ sso_hws_link_modify(uint8_t hws, uintptr_t base, struct plt_bitmap *bmp,
 		k = n % 4;
 		k = k ? k : 4;
 		for (j = 0; j < k; j++) {
-			mask[j] = hwgrp[i + j] | enable << 14;
+			mask[j] = hwgrp[i + j] | (uint32_t)set << 12 | enable << 14;
 			if (bmp) {
 				enable ? plt_bitmap_set(bmp, hwgrp[i + j]) :
 					 plt_bitmap_clear(bmp, hwgrp[i + j]);
@@ -288,8 +290,8 @@ roc_sso_ns_to_gw(struct roc_sso *roc_sso, uint64_t ns)
 }
 
 int
-roc_sso_hws_link(struct roc_sso *roc_sso, uint8_t hws, uint16_t hwgrp[],
-		 uint16_t nb_hwgrp)
+roc_sso_hws_link(struct roc_sso *roc_sso, uint8_t hws, uint16_t hwgrp[], uint16_t nb_hwgrp,
+		 uint8_t set)
 {
 	struct dev *dev = &roc_sso_to_sso_priv(roc_sso)->dev;
 	struct sso *sso;
@@ -297,14 +299,14 @@ roc_sso_hws_link(struct roc_sso *roc_sso, uint8_t hws, uint16_t hwgrp[],
 
 	sso = roc_sso_to_sso_priv(roc_sso);
 	base = dev->bar2 + (RVU_BLOCK_ADDR_SSOW << 20 | hws << 12);
-	sso_hws_link_modify(hws, base, sso->link_map[hws], hwgrp, nb_hwgrp, 1);
+	sso_hws_link_modify(hws, base, sso->link_map[hws], hwgrp, nb_hwgrp, set, 1);
 
 	return nb_hwgrp;
 }
 
 int
-roc_sso_hws_unlink(struct roc_sso *roc_sso, uint8_t hws, uint16_t hwgrp[],
-		   uint16_t nb_hwgrp)
+roc_sso_hws_unlink(struct roc_sso *roc_sso, uint8_t hws, uint16_t hwgrp[], uint16_t nb_hwgrp,
+		   uint8_t set)
 {
 	struct dev *dev = &roc_sso_to_sso_priv(roc_sso)->dev;
 	struct sso *sso;
@@ -312,7 +314,7 @@ roc_sso_hws_unlink(struct roc_sso *roc_sso, uint8_t hws, uint16_t hwgrp[],
 
 	sso = roc_sso_to_sso_priv(roc_sso);
 	base = dev->bar2 + (RVU_BLOCK_ADDR_SSOW << 20 | hws << 12);
-	sso_hws_link_modify(hws, base, sso->link_map[hws], hwgrp, nb_hwgrp, 0);
+	sso_hws_link_modify(hws, base, sso->link_map[hws], hwgrp, nb_hwgrp, set, 0);
 
 	return nb_hwgrp;
 }
@@ -354,6 +356,37 @@ roc_sso_hws_stats_get(struct roc_sso *roc_sso, uint8_t hws,
 fail:
 	mbox_put(mbox);
 	return rc;
+}
+
+void
+roc_sso_hws_gwc_invalidate(struct roc_sso *roc_sso, uint8_t *hws,
+			   uint8_t nb_hws)
+{
+	struct sso *sso = roc_sso_to_sso_priv(roc_sso);
+	struct ssow_lf_inv_req *req;
+	struct dev *dev = &sso->dev;
+	struct mbox *mbox;
+	int i;
+
+	if (!nb_hws)
+		return;
+
+	mbox = mbox_get(dev->mbox);
+	req = mbox_alloc_msg_sso_ws_cache_inv(mbox);
+	if (req == NULL) {
+		mbox_process(mbox);
+		req = mbox_alloc_msg_sso_ws_cache_inv(mbox);
+		if (req == NULL) {
+			mbox_put(mbox);
+			return;
+		}
+	}
+	req->hdr.ver = SSOW_INVAL_SELECTIVE_VER;
+	req->nb_hws = nb_hws;
+	for (i = 0; i < nb_hws; i++)
+		req->hws[i] = hws[i];
+	mbox_process(mbox);
+	mbox_put(mbox);
 }
 
 int
@@ -493,9 +526,14 @@ sso_hwgrp_init_xaq_aura(struct dev *dev, struct roc_sso_xaq_data *xaq,
 
 	xaq->nb_xae = nb_xae;
 
-	/* Taken from HRM 14.3.3(4) */
+	/** SSO will reserve up to 0x4 XAQ buffers per group when GetWork engine
+	 * is inactive and it might prefetch an additional 0x3 buffers due to
+	 * pipelining.
+	 */
 	xaq->nb_xaq = (SSO_XAQ_CACHE_CNT * nb_hwgrp);
+	xaq->nb_xaq += (SSO_XAQ_RSVD_CNT * nb_hwgrp);
 	xaq->nb_xaq += PLT_MAX(1 + ((xaq->nb_xae - 1) / xae_waes), xaq->nb_xaq);
+	xaq->nb_xaq += SSO_XAQ_SLACK;
 
 	xaq->mem = plt_zmalloc(xaq_buf_size * xaq->nb_xaq, xaq_buf_size);
 	if (xaq->mem == NULL) {
@@ -523,7 +561,7 @@ sso_hwgrp_init_xaq_aura(struct dev *dev, struct roc_sso_xaq_data *xaq,
 		roc_npa_aura_op_free(xaq->aura_handle, 0, iova);
 		iova += xaq_buf_size;
 	}
-	roc_npa_aura_op_range_set(xaq->aura_handle, (uint64_t)xaq->mem, iova);
+	roc_npa_pool_op_range_set(xaq->aura_handle, (uint64_t)xaq->mem, iova);
 
 	if (roc_npa_aura_op_available_wait(xaq->aura_handle, xaq->nb_xaq, 0) !=
 	    xaq->nb_xaq) {
@@ -537,7 +575,7 @@ sso_hwgrp_init_xaq_aura(struct dev *dev, struct roc_sso_xaq_data *xaq,
 	 * There should be a minimum headroom of 7 XAQs per HWGRP for SSO
 	 * to request XAQ to cache them even before enqueue is called.
 	 */
-	xaq->xaq_lmt = xaq->nb_xaq - (nb_hwgrp * SSO_XAQ_CACHE_CNT);
+	xaq->xaq_lmt = xaq->nb_xaq - (nb_hwgrp * SSO_XAQ_CACHE_CNT) - SSO_XAQ_SLACK;
 
 	return 0;
 npa_fill_fail:

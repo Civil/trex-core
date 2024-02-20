@@ -13,10 +13,12 @@
 #include "roc_constants.h"
 #include "roc_cpt.h"
 #include "roc_cpt_sg.h"
+#include "roc_errata.h"
 #include "roc_se.h"
 
-#define CNXK_CPT_MIN_HEADROOM_REQ	 32
-#define CNXK_CPT_MIN_TAILROOM_REQ	 102
+/* Space for ctrl_word(8B), IV(48B), passthrough alignment(8B) */
+#define CNXK_CPT_MIN_HEADROOM_REQ 64
+#define CNXK_CPT_MIN_TAILROOM_REQ 102
 
 /* Default command timeout in seconds */
 #define DEFAULT_COMMAND_TIMEOUT 4
@@ -43,6 +45,7 @@ struct cpt_qp_meta_info {
 struct cpt_inflight_req {
 	union cpt_res_s res;
 	union {
+		void *opaque;
 		struct rte_crypto_op *cop;
 		struct rte_event_vector *vec;
 	};
@@ -179,5 +182,12 @@ alloc_op_meta(struct roc_se_buf_ptr *buf, int32_t len, struct rte_mempool *cpt_m
 	infl_req->op_flags |= CPT_OP_FLAGS_METABUF;
 
 	return mdata;
+}
+
+static __rte_always_inline bool
+hw_ctx_cache_enable(void)
+{
+	return roc_errata_cpt_hang_on_mixed_ctx_val() || roc_model_is_cn10ka_b0() ||
+	       roc_model_is_cn10kb_a0();
 }
 #endif /* _CNXK_CRYPTODEV_OPS_H_ */

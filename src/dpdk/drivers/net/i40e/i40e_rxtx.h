@@ -21,6 +21,9 @@
 /* In none-PXE mode QLEN must be whole number of 32 descriptors. */
 #define	I40E_ALIGN_RING_DESC	32
 
+/* Max data buffer size must be 16K - 128 bytes */
+#define I40E_RX_MAX_DATA_BUF_SIZE	(16 * 1024 - 128)
+
 #define	I40E_MIN_RING_DESC	64
 #define	I40E_MAX_RING_DESC	4096
 
@@ -166,7 +169,7 @@ struct i40e_tx_queue {
 	bool q_set; /**< indicate if tx queue has been configured */
 	bool tx_deferred_start; /**< don't start this queue in dev start */
 	uint8_t dcb_tc;         /**< Traffic class of tx queue */
-	uint64_t offloads; /**< Tx offload flags of RTE_ETH_RX_OFFLOAD_* */
+	uint64_t offloads; /**< Tx offload flags of RTE_ETH_TX_OFFLOAD_* */
 	const struct rte_memzone *mz;
 };
 
@@ -232,6 +235,10 @@ void i40e_rx_queue_release_mbufs(struct i40e_rx_queue *rxq);
 uint32_t i40e_dev_rx_queue_count(void *rx_queue);
 int i40e_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int i40e_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
+
+uint16_t i40e_recycle_tx_mbufs_reuse_vec(void *tx_queue,
+		struct rte_eth_recycle_rxq_info *recycle_rxq_info);
+void i40e_recycle_rx_descriptors_refill_vec(void *rx_queue, uint16_t nb_mbufs);
 
 uint16_t i40e_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			    uint16_t nb_pkts);

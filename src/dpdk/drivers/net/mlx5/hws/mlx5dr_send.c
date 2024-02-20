@@ -110,7 +110,7 @@ mlx5dr_send_wqe_set_tag(struct mlx5dr_wqe_gta_data_seg_ste *wqe_data,
 	if (is_jumbo) {
 		/* Clear previous possibly dirty control */
 		memset(wqe_data, 0, MLX5DR_STE_CTRL_SZ);
-		memcpy(wqe_data->action, tag->jumbo, MLX5DR_JUMBO_TAG_SZ);
+		memcpy(wqe_data->jumbo, tag->jumbo, MLX5DR_JUMBO_TAG_SZ);
 	} else {
 		/* Clear previous possibly dirty control and actions */
 		memset(wqe_data, 0, MLX5DR_STE_CTRL_SZ + MLX5DR_ACTIONS_SZ);
@@ -666,11 +666,6 @@ free_sq:
 	mlx5dr_cmd_destroy_obj(sq->obj);
 
 	return err;
-}
-
-static inline unsigned long align(unsigned long val, unsigned long align)
-{
-	return (val + align - 1) & ~(align - 1);
 }
 
 static int mlx5dr_send_ring_open_sq(struct mlx5dr_context *ctx,

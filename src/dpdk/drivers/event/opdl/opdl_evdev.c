@@ -378,6 +378,7 @@ opdl_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *info)
 		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE |
 				 RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
 				 RTE_EVENT_DEV_CAP_MAINTENANCE_FREE,
+		.max_profiles_per_port = 1,
 	};
 
 	*info = evdev_opdl_info;
@@ -696,7 +697,7 @@ opdl_probe(struct rte_vdev_device *vdev)
 		}
 	}
 	dev = rte_event_pmd_vdev_init(name,
-			sizeof(struct opdl_evdev), socket_id);
+			sizeof(struct opdl_evdev), socket_id, vdev);
 
 	if (dev == NULL) {
 		PMD_DRV_LOG(ERR, "eventdev vdev init() failed");

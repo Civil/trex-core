@@ -109,33 +109,6 @@ RTE_LOG_REGISTER_DEFAULT(af_packet_logtype, NOTICE);
 #define PMD_LOG_ERRNO(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, af_packet_logtype, \
 		"%s(): " fmt ":%s\n", __func__, ##args, strerror(errno))
-#ifdef TREX_PATCH
-/*
-Inserts VLAN layer into given mbuf (mimic Dot1Q)
-Original:
--------------------------------------------------------------------
-| Dest MAC | Src MAC | EtherType 1 | VLAN | EtherType 2 | IP etc. |
--------------------------------------------------------------------
-Stripped:
-----------------------------------------------
-| Dest MAC | Src MAC | EtherType 2 | IP etc. |
-----------------------------------------------
-*/
-static inline void rte_pktmbuf_insert_stripped_vlan_layer(struct rte_mbuf *m, uint16_t vlan_id) {
-    size_t insert_size = 4;
-    size_t skip_size = 12; // dest MAC and src MAC
-    void* res = rte_pktmbuf_prepend(m, insert_size);
-    RTE_ASSERT(res);   // ensure there is enough space
-
-    void *data_start = rte_pktmbuf_mtod(m, void*);
-    memmove(data_start, data_start + insert_size, skip_size);
-
-    uint16_t vlan_protocol = 0x8100; // Dot1Q
-    uint32_t vlan_tag = (vlan_protocol << 16) | vlan_id;
-    vlan_tag = rte_bswap32(vlan_tag);
-    memcpy(data_start + skip_size, &vlan_tag, insert_size);
-}
-#endif
 
 static uint16_t
 eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
@@ -176,15 +149,11 @@ eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 
 		/* check for vlan info */
 		if (ppd->tp_status & TP_STATUS_VLAN_VALID) {
-#ifdef TREX_PATCH
-            rte_pktmbuf_insert_stripped_vlan_layer(mbuf, ppd->tp_vlan_tci);
-#else
 			mbuf->vlan_tci = ppd->tp_vlan_tci;
 			mbuf->ol_flags |= (RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED);
 
 			if (!pkt_q->vlan_strip && rte_vlan_insert(&mbuf))
 				PMD_LOG(ERR, "Failed to reinsert VLAN tag");
-#endif
 		}
 
 		/* release incoming frame and advance ring buffer */
@@ -219,9 +188,7 @@ tx_ring_status_available(uint32_t tp_status)
 	 *     commit 171c3b151118a2fe0fc1e2a9d1b5a1570cfe82d2
 	 *     net: packetmmap: fix only tx timestamp on request
 	 */
-#ifndef TREX_PATCH
 	tp_status &= ~(TP_STATUS_TS_SOFTWARE | TP_STATUS_TS_RAW_HARDWARE);
-#endif
 
 	return tp_status == TP_STATUS_AVAILABLE;
 }
@@ -346,7 +313,14 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 static int
 eth_dev_start(struct rte_eth_dev *dev)
 {
+	struct pmd_internals *internals = dev->data->dev_private;
+	uint16_t i;
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
+	for (i = 0; i < internals->nb_queues; i++) {
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	}
 	return 0;
 }
 
@@ -374,6 +348,8 @@ eth_dev_stop(struct rte_eth_dev *dev)
 
 		internals->rx_queue[i].sockfd = -1;
 		internals->tx_queue[i].sockfd = -1;
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 
 	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;

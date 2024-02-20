@@ -57,6 +57,7 @@ struct nix_inl_dev {
 	bool is_nix1;
 	uint8_t spb_drop_pc;
 	uint8_t lpb_drop_pc;
+	uint64_t sso_work_cnt;
 
 	/* NIX/CPT data */
 	void *inb_sa_base;
@@ -66,7 +67,7 @@ struct nix_inl_dev {
 	struct roc_cpt_lf cpt_lf;
 
 	/* OUTB soft expiry poll thread */
-	pthread_t soft_exp_poll_thread;
+	plt_thread_t soft_exp_poll_thread;
 	uint32_t soft_exp_poll_freq;
 	uint64_t *sa_soft_exp_ring;
 	bool set_soft_exp_poll;

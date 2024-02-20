@@ -16,8 +16,8 @@ struct mana_shared_data {
 	unsigned int secondary_cnt;
 };
 
+#define MANA_MAX_MTU	9000
 #define MIN_RX_BUF_SIZE	1024
-#define MAX_FRAME_SIZE	RTE_ETHER_MAX_LEN
 #define MANA_MAX_MAC_ADDR 1
 
 #define MANA_DEV_RX_OFFLOAD_SUPPORT ( \
@@ -49,6 +49,21 @@ struct mana_shared_data {
 #define COMP_ENTRY_SIZE 64
 #define MAX_TX_WQE_SIZE 512
 #define MAX_RX_WQE_SIZE 256
+
+/* For 32 bit only */
+#ifdef RTE_ARCH_32
+#define	GDMA_SHORT_DB_INC_MASK 0xffff
+#define	GDMA_SHORT_DB_QID_MASK 0xfff
+
+#define GDMA_SHORT_DB_MAX_WQE	(0x10000 / GDMA_WQE_ALIGNMENT_UNIT_SIZE)
+
+#define TX_WQE_SHORT_DB_THRESHOLD			\
+	(GDMA_SHORT_DB_MAX_WQE -			\
+	(MAX_TX_WQE_SIZE / GDMA_WQE_ALIGNMENT_UNIT_SIZE))
+#define RX_WQE_SHORT_DB_THRESHOLD			\
+	(GDMA_SHORT_DB_MAX_WQE -			\
+	(MAX_RX_WQE_SIZE / GDMA_WQE_ALIGNMENT_UNIT_SIZE))
+#endif
 
 /* Values from the GDMA specification document, WQE format description */
 #define INLINE_OOB_SMALL_SIZE_IN_BYTES 8
@@ -141,19 +156,6 @@ struct gdma_header {
 
 #define COMPLETION_QUEUE_OWNER_MASK \
 	((1 << (COMPLETION_QUEUE_ENTRY_OWNER_BITS_SIZE)) - 1)
-
-struct gdma_comp {
-	struct gdma_header gdma_header;
-
-	/* Filled by GDMA core */
-	uint32_t completion_data[GDMA_COMP_DATA_SIZE_IN_UINT32];
-
-	/* Filled by GDMA core */
-	uint32_t work_queue_number;
-
-	/* Filled by GDMA core */
-	bool send_work_queue;
-};
 
 struct gdma_hardware_completion_entry {
 	char dma_client_data[GDMA_COMP_DATA_SIZE];
@@ -366,6 +368,7 @@ struct mana_priv {
 struct mana_txq_desc {
 	struct rte_mbuf *pkt;
 	uint32_t wqe_size_in_bu;
+	bool suppress_tx_cqe;
 };
 
 struct mana_rxq_desc {
@@ -391,6 +394,11 @@ struct mana_gdma_queue {
 
 #define MANA_MR_BTREE_PER_QUEUE_N	64
 
+struct gdma_comp {
+	/* Filled by GDMA core */
+	char *cqe_data;
+};
+
 struct mana_txq {
 	struct mana_priv *priv;
 	uint32_t num_desc;
@@ -399,6 +407,7 @@ struct mana_txq {
 
 	struct mana_gdma_queue gdma_sq;
 	struct mana_gdma_queue gdma_cq;
+	struct gdma_comp *gdma_comp_buf;
 
 	uint32_t tx_vp_offset;
 
@@ -408,7 +417,7 @@ struct mana_txq {
 	/* desc_ring_head is where we put pending requests to ring,
 	 * completion pull off desc_ring_tail
 	 */
-	uint32_t desc_ring_head, desc_ring_tail;
+	uint32_t desc_ring_head, desc_ring_tail, desc_ring_len;
 
 	struct mana_mr_btree mr_btree;
 	struct mana_stats stats;
@@ -431,8 +440,18 @@ struct mana_rxq {
 	 */
 	uint32_t desc_ring_head, desc_ring_tail;
 
+#ifdef RTE_ARCH_32
+	/* For storing wqe increment count btw each short doorbell ring */
+	uint32_t wqe_cnt_to_short_db;
+#endif
+
 	struct mana_gdma_queue gdma_rq;
 	struct mana_gdma_queue gdma_cq;
+	struct gdma_comp *gdma_comp_buf;
+
+	uint32_t comp_buf_len;
+	uint32_t comp_buf_idx;
+	uint32_t backlog_idx;
 
 	struct mana_stats stats;
 	struct mana_mr_btree mr_btree;
@@ -447,19 +466,28 @@ extern int mana_logtype_init;
 	rte_log(RTE_LOG_ ## level, mana_logtype_driver, "%s(): " fmt "\n", \
 		__func__, ## args)
 
+#define DP_LOG(level, fmt, args...) \
+	RTE_LOG_DP(level, PMD, fmt "\n", ## args)
+
 #define PMD_INIT_LOG(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, mana_logtype_init, "%s(): " fmt "\n",\
 		__func__, ## args)
 
 #define PMD_INIT_FUNC_TRACE() PMD_INIT_LOG(DEBUG, " >>")
 
+#ifdef RTE_ARCH_32
+int mana_ring_short_doorbell(void *db_page, enum gdma_queue_types queue_type,
+			     uint32_t queue_id, uint32_t tail_incr,
+			     uint8_t arm);
+#else
 int mana_ring_doorbell(void *db_page, enum gdma_queue_types queue_type,
 		       uint32_t queue_id, uint32_t tail, uint8_t arm);
-int mana_rq_ring_doorbell(struct mana_rxq *rxq, uint8_t arm);
+#endif
+int mana_rq_ring_doorbell(struct mana_rxq *rxq);
 
 int gdma_post_work_request(struct mana_gdma_queue *queue,
 			   struct gdma_work_request *work_req,
-			   struct gdma_posted_wqe_info *wqe_info);
+			   uint32_t *wqe_size_in_bu);
 uint8_t *gdma_get_wqe_pointer(struct mana_gdma_queue *queue);
 
 uint16_t mana_rx_burst(void *dpdk_rxq, struct rte_mbuf **rx_pkts,
@@ -473,8 +501,9 @@ uint16_t mana_rx_burst_removed(void *dpdk_rxq, struct rte_mbuf **pkts,
 uint16_t mana_tx_burst_removed(void *dpdk_rxq, struct rte_mbuf **pkts,
 			       uint16_t pkts_n);
 
-int gdma_poll_completion_queue(struct mana_gdma_queue *cq,
-			       struct gdma_comp *comp);
+uint32_t gdma_poll_completion_queue(struct mana_gdma_queue *cq,
+				    struct gdma_comp *gdma_comp,
+				    uint32_t max_comp);
 
 int mana_start_rx_queues(struct rte_eth_dev *dev);
 int mana_start_tx_queues(struct rte_eth_dev *dev);

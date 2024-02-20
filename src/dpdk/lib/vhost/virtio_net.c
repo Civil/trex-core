@@ -55,7 +55,7 @@ is_valid_virt_queue_idx(uint32_t idx, int is_tx, uint32_t nr_vring)
 static inline void
 vhost_queue_stats_update(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mbuf **pkts, uint16_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct virtqueue_stats *stats = &vq->stats;
 	int i;
@@ -77,7 +77,7 @@ vhost_queue_stats_update(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			uint32_t bin;
 
 			/* count zeros, and offset into correct bin */
-			bin = (sizeof(pkt_len) * 8) - __builtin_clz(pkt_len) - 5;
+			bin = (sizeof(pkt_len) * 8) - rte_clz32(pkt_len) - 5;
 			stats->size_bins[bin]++;
 		} else {
 			if (pkt_len < 64)
@@ -102,7 +102,7 @@ static __rte_always_inline int64_t
 vhost_async_dma_transfer_one(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		int16_t dma_id, uint16_t vchan_id, uint16_t flag_idx,
 		struct vhost_iov_iter *pkt)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct async_dma_vchan_info *dma_info = &dma_copy_track[dma_id].vchans[vchan_id];
 	uint16_t ring_mask = dma_info->ring_mask;
@@ -152,7 +152,7 @@ static __rte_always_inline uint16_t
 vhost_async_dma_transfer(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		int16_t dma_id, uint16_t vchan_id, uint16_t head_idx,
 		struct vhost_iov_iter *pkts, uint16_t nr_pkts)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct async_dma_vchan_info *dma_info = &dma_copy_track[dma_id].vchans[vchan_id];
 	int64_t ret, nr_copies = 0;
@@ -298,8 +298,8 @@ flush_shadow_used_ring_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 
 	vhost_log_cache_sync(dev, vq);
 
-	__atomic_add_fetch(&vq->used->idx, vq->shadow_used_idx,
-			   __ATOMIC_RELEASE);
+	rte_atomic_fetch_add_explicit((unsigned short __rte_atomic *)&vq->used->idx,
+		vq->shadow_used_idx, rte_memory_order_release);
 	vq->shadow_used_idx = 0;
 	vhost_log_used_vring(dev, vq, offsetof(struct vring_used, idx),
 		sizeof(vq->used->idx));
@@ -335,7 +335,7 @@ vhost_flush_enqueue_shadow_packed(struct virtio_net *dev,
 	}
 
 	/* The ordering for storing desc flags needs to be enforced. */
-	rte_atomic_thread_fence(__ATOMIC_RELEASE);
+	rte_atomic_thread_fence(rte_memory_order_release);
 
 	for (i = 0; i < vq->shadow_used_idx; i++) {
 		uint16_t flags;
@@ -387,8 +387,9 @@ vhost_flush_dequeue_shadow_packed(struct virtio_net *dev,
 
 	vq->desc_packed[vq->shadow_last_used_idx].id = used_elem->id;
 	/* desc flags is the synchronization point for virtio packed vring */
-	__atomic_store_n(&vq->desc_packed[vq->shadow_last_used_idx].flags,
-			 used_elem->flags, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(
+		(unsigned short __rte_atomic *)&vq->desc_packed[vq->shadow_last_used_idx].flags,
+		used_elem->flags, rte_memory_order_release);
 
 	vhost_log_cache_used_vring(dev, vq, vq->shadow_last_used_idx *
 				   sizeof(struct vring_packed_desc),
@@ -418,7 +419,7 @@ vhost_flush_enqueue_batch_packed(struct virtio_net *dev,
 		desc_base[i].len = lens[i];
 	}
 
-	rte_atomic_thread_fence(__ATOMIC_RELEASE);
+	rte_atomic_thread_fence(rte_memory_order_release);
 
 	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
 		desc_base[i].flags = flags;
@@ -454,7 +455,7 @@ vhost_async_shadow_enqueue_packed_batch(struct vhost_virtqueue *vq,
 
 static __rte_always_inline void
 vhost_async_shadow_dequeue_packed_batch(struct vhost_virtqueue *vq, uint16_t *ids)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	uint16_t i;
 	struct vhost_async *async = vq->async;
@@ -515,7 +516,7 @@ vhost_shadow_dequeue_batch_packed(struct virtio_net *dev,
 		vq->desc_packed[vq->last_used_idx + i].len = 0;
 	}
 
-	rte_atomic_thread_fence(__ATOMIC_RELEASE);
+	rte_atomic_thread_fence(rte_memory_order_release);
 	vhost_for_each_try_unroll(i, begin, PACKED_BATCH_SIZE)
 		vq->desc_packed[vq->last_used_idx + i].flags = flags;
 
@@ -1131,7 +1132,7 @@ static __rte_always_inline int
 async_fill_seg(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mbuf *m, uint32_t mbuf_offset,
 		uint64_t buf_iova, uint32_t cpy_len, bool to_desc)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	struct vhost_async *async = vq->async;
@@ -1211,7 +1212,7 @@ static __rte_always_inline int
 mbuf_to_desc(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mbuf *m, struct buf_vector *buf_vec,
 		uint16_t nr_vec, uint16_t num_buffers, bool is_async)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint32_t vec_idx = 0;
@@ -1341,7 +1342,7 @@ vhost_enqueue_single_packed(struct virtio_net *dev,
 			    struct rte_mbuf *pkt,
 			    struct buf_vector *buf_vec,
 			    uint16_t *nr_descs)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint16_t nr_vec = 0;
@@ -1403,7 +1404,7 @@ vhost_enqueue_single_packed(struct virtio_net *dev,
 static __rte_noinline uint32_t
 virtio_dev_rx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	struct rte_mbuf **pkts, uint32_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint32_t pkt_idx = 0;
@@ -1415,7 +1416,8 @@ virtio_dev_rx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	 * The ordering between avail index and
 	 * desc reads needs to be enforced.
 	 */
-	avail_head = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE);
+	avail_head = rte_atomic_load_explicit((unsigned short __rte_atomic *)&vq->avail->idx,
+		rte_memory_order_acquire);
 
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 
@@ -1635,7 +1637,7 @@ static __rte_always_inline int16_t
 virtio_dev_rx_single_packed(struct virtio_net *dev,
 			    struct vhost_virtqueue *vq,
 			    struct rte_mbuf *pkt)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	struct buf_vector buf_vec[BUF_VECTOR_MAX];
@@ -1661,7 +1663,7 @@ virtio_dev_rx_packed(struct virtio_net *dev,
 		     struct vhost_virtqueue *__rte_restrict vq,
 		     struct rte_mbuf **__rte_restrict pkts,
 		     uint32_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint32_t pkt_idx = 0;
@@ -1701,7 +1703,7 @@ virtio_dev_rx(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	uint32_t nb_tx = 0;
 
 	VHOST_LOG_DATA(dev->ifname, DEBUG, "%s\n", __func__);
-	rte_spinlock_lock(&vq->access_lock);
+	rte_rwlock_read_lock(&vq->access_lock);
 
 	if (unlikely(!vq->enabled))
 		goto out_access_unlock;
@@ -1727,7 +1729,7 @@ out:
 	vhost_user_iotlb_rd_unlock(vq);
 
 out_access_unlock:
-	rte_spinlock_unlock(&vq->access_lock);
+	rte_rwlock_read_unlock(&vq->access_lock);
 
 	return nb_tx;
 }
@@ -1760,7 +1762,7 @@ rte_vhost_enqueue_burst(int vid, uint16_t queue_id,
 
 static __rte_always_inline uint16_t
 async_get_first_inflight_pkt_idx(struct vhost_virtqueue *vq)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct vhost_async *async = vq->async;
 
@@ -1806,7 +1808,8 @@ virtio_dev_rx_async_submit_split(struct virtio_net *dev, struct vhost_virtqueue 
 	/*
 	 * The ordering between avail index and desc reads need to be enforced.
 	 */
-	avail_head = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE);
+	avail_head = rte_atomic_load_explicit((unsigned short __rte_atomic *)&vq->avail->idx,
+		rte_memory_order_acquire);
 
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 
@@ -2165,7 +2168,7 @@ virtio_dev_rx_async_submit_packed(struct virtio_net *dev, struct vhost_virtqueue
 
 static __rte_always_inline void
 write_back_completed_descs_split(struct vhost_virtqueue *vq, uint16_t n_descs)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct vhost_async *async = vq->async;
 	uint16_t nr_left = n_descs;
@@ -2198,7 +2201,7 @@ write_back_completed_descs_split(struct vhost_virtqueue *vq, uint16_t n_descs)
 static __rte_always_inline void
 write_back_completed_descs_packed(struct vhost_virtqueue *vq,
 				uint16_t n_buffers)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct vhost_async *async = vq->async;
 	uint16_t from = async->last_buffer_idx_packed;
@@ -2222,7 +2225,7 @@ write_back_completed_descs_packed(struct vhost_virtqueue *vq,
 	}
 
 	/* The ordering for storing desc flags needs to be enforced. */
-	rte_atomic_thread_fence(__ATOMIC_RELEASE);
+	rte_atomic_thread_fence(rte_memory_order_release);
 
 	from = async->last_buffer_idx_packed;
 
@@ -2263,7 +2266,7 @@ write_back_completed_descs_packed(struct vhost_virtqueue *vq,
 static __rte_always_inline uint16_t
 vhost_poll_enqueue_completed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	struct rte_mbuf **pkts, uint16_t count, int16_t dma_id, uint16_t vchan_id)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct vhost_async *async = vq->async;
 	struct async_inflight_info *pkts_info = async->pkts_info;
@@ -2311,7 +2314,9 @@ vhost_poll_enqueue_completed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			vhost_vring_call_packed(dev, vq);
 		} else {
 			write_back_completed_descs_split(vq, n_descs);
-			__atomic_add_fetch(&vq->used->idx, n_descs, __ATOMIC_RELEASE);
+			rte_atomic_fetch_add_explicit(
+				(unsigned short __rte_atomic *)&vq->used->idx,
+				n_descs, rte_memory_order_release);
 			vhost_vring_call_split(dev, vq);
 		}
 	} else {
@@ -2357,7 +2362,7 @@ rte_vhost_poll_enqueue_completed(int vid, uint16_t queue_id,
 
 	vq = dev->virtqueue[queue_id];
 
-	if (!rte_spinlock_trylock(&vq->access_lock)) {
+	if (rte_rwlock_read_trylock(&vq->access_lock)) {
 		VHOST_LOG_DATA(dev->ifname, DEBUG,
 			"%s: virtqueue %u is busy.\n",
 			__func__, queue_id);
@@ -2377,7 +2382,7 @@ rte_vhost_poll_enqueue_completed(int vid, uint16_t queue_id,
 	vq->stats.inflight_completed += n_pkts_cpl;
 
 out:
-	rte_spinlock_unlock(&vq->access_lock);
+	rte_rwlock_read_unlock(&vq->access_lock);
 
 	return n_pkts_cpl;
 }
@@ -2465,7 +2470,7 @@ rte_vhost_clear_queue(int vid, uint16_t queue_id, struct rte_mbuf **pkts,
 
 	vq = dev->virtqueue[queue_id];
 
-	if (!rte_spinlock_trylock(&vq->access_lock)) {
+	if (rte_rwlock_read_trylock(&vq->access_lock)) {
 		VHOST_LOG_DATA(dev->ifname, DEBUG, "%s: virtqueue %u is busy.\n",
 			__func__, queue_id);
 		return 0;
@@ -2495,7 +2500,7 @@ rte_vhost_clear_queue(int vid, uint16_t queue_id, struct rte_mbuf **pkts,
 	vq->stats.inflight_completed += n_pkts_cpl;
 
 out_access_unlock:
-	rte_spinlock_unlock(&vq->access_lock);
+	rte_rwlock_read_unlock(&vq->access_lock);
 
 	return n_pkts_cpl;
 }
@@ -2516,7 +2521,7 @@ virtio_dev_rx_async_submit(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		return 0;
 	}
 
-	rte_spinlock_lock(&vq->access_lock);
+	rte_rwlock_write_lock(&vq->access_lock);
 
 	if (unlikely(!vq->enabled || !vq->async))
 		goto out_access_unlock;
@@ -2544,7 +2549,7 @@ out:
 	vhost_user_iotlb_rd_unlock(vq);
 
 out_access_unlock:
-	rte_spinlock_unlock(&vq->access_lock);
+	rte_rwlock_write_unlock(&vq->access_lock);
 
 	return nb_tx;
 }
@@ -2866,7 +2871,7 @@ desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		  struct buf_vector *buf_vec, uint16_t nr_vec,
 		  struct rte_mbuf *m, struct rte_mempool *mbuf_pool,
 		  bool legacy_ol_flags, uint16_t slot_idx, bool is_async)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint32_t buf_avail, buf_offset, buf_len;
@@ -3073,7 +3078,7 @@ static uint16_t
 virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts, uint16_t count,
 	bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint16_t i;
@@ -3085,8 +3090,8 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	 * The ordering between avail index and
 	 * desc reads needs to be enforced.
 	 */
-	avail_entries = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE) -
-			vq->last_avail_idx;
+	avail_entries = rte_atomic_load_explicit((unsigned short __rte_atomic *)&vq->avail->idx,
+		rte_memory_order_acquire) - vq->last_avail_idx;
 	if (avail_entries == 0)
 		return 0;
 
@@ -3178,7 +3183,7 @@ static uint16_t
 virtio_dev_tx_split_legacy(struct virtio_net *dev,
 	struct vhost_virtqueue *vq, struct rte_mempool *mbuf_pool,
 	struct rte_mbuf **pkts, uint16_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_split(dev, vq, mbuf_pool, pkts, count, true);
@@ -3189,7 +3194,7 @@ static uint16_t
 virtio_dev_tx_split_compliant(struct virtio_net *dev,
 	struct vhost_virtqueue *vq, struct rte_mempool *mbuf_pool,
 	struct rte_mbuf **pkts, uint16_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_split(dev, vq, mbuf_pool, pkts, count, false);
@@ -3224,7 +3229,7 @@ vhost_reserve_avail_batch_packed(struct virtio_net *dev,
 			return -1;
 	}
 
-	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+	rte_atomic_thread_fence(rte_memory_order_acquire);
 
 	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
 		lens[i] = descs[avail_idx + i].len;
@@ -3297,7 +3302,7 @@ vhost_async_tx_batch_packed_check(struct virtio_net *dev,
 			return -1;
 	}
 
-	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+	rte_atomic_thread_fence(rte_memory_order_acquire);
 
 	vhost_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE)
 		lens[i] = descs[avail_idx + i].len;
@@ -3393,7 +3398,7 @@ vhost_dequeue_single_packed(struct virtio_net *dev,
 			    uint16_t *buf_id,
 			    uint16_t *desc_count,
 			    bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	struct buf_vector buf_vec[BUF_VECTOR_MAX];
@@ -3443,7 +3448,7 @@ virtio_dev_tx_single_packed(struct virtio_net *dev,
 			    struct rte_mempool *mbuf_pool,
 			    struct rte_mbuf *pkts,
 			    bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 
@@ -3475,7 +3480,7 @@ virtio_dev_tx_packed(struct virtio_net *dev,
 		     struct rte_mbuf **__rte_restrict pkts,
 		     uint32_t count,
 		     bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint32_t pkt_idx = 0;
@@ -3520,7 +3525,7 @@ static uint16_t
 virtio_dev_tx_packed_legacy(struct virtio_net *dev,
 	struct vhost_virtqueue *__rte_restrict vq, struct rte_mempool *mbuf_pool,
 	struct rte_mbuf **__rte_restrict pkts, uint32_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_packed(dev, vq, mbuf_pool, pkts, count, true);
@@ -3531,7 +3536,7 @@ static uint16_t
 virtio_dev_tx_packed_compliant(struct virtio_net *dev,
 	struct vhost_virtqueue *__rte_restrict vq, struct rte_mempool *mbuf_pool,
 	struct rte_mbuf **__rte_restrict pkts, uint32_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_packed(dev, vq, mbuf_pool, pkts, count, false);
@@ -3566,7 +3571,7 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 
 	vq = dev->virtqueue[queue_id];
 
-	if (unlikely(rte_spinlock_trylock(&vq->access_lock) == 0))
+	if (unlikely(rte_rwlock_read_trylock(&vq->access_lock) != 0))
 		return 0;
 
 	if (unlikely(!vq->enabled)) {
@@ -3590,7 +3595,7 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	 *
 	 * broadcast_rarp shares a cacheline in the virtio_net structure
 	 * with some fields that are accessed during enqueue and
-	 * __atomic_compare_exchange_n causes a write if performed compare
+	 * rte_atomic_compare_exchange_strong_explicit causes a write if performed compare
 	 * and exchange. This could result in false sharing between enqueue
 	 * and dequeue.
 	 *
@@ -3598,9 +3603,9 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	 * and only performing compare and exchange if the read indicates it
 	 * is likely to be set.
 	 */
-	if (unlikely(__atomic_load_n(&dev->broadcast_rarp, __ATOMIC_ACQUIRE) &&
-			__atomic_compare_exchange_n(&dev->broadcast_rarp,
-			&success, 0, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED))) {
+	if (unlikely(rte_atomic_load_explicit(&dev->broadcast_rarp, rte_memory_order_acquire) &&
+			rte_atomic_compare_exchange_strong_explicit(&dev->broadcast_rarp,
+			&success, 0, rte_memory_order_release, rte_memory_order_relaxed))) {
 
 		rarp_mbuf = rte_net_make_rarp_packet(mbuf_pool, &dev->mac);
 		if (rarp_mbuf == NULL) {
@@ -3636,7 +3641,7 @@ out:
 	vhost_user_iotlb_rd_unlock(vq);
 
 out_access_unlock:
-	rte_spinlock_unlock(&vq->access_lock);
+	rte_rwlock_read_unlock(&vq->access_lock);
 
 	if (unlikely(rarp_mbuf != NULL))
 		count += 1;
@@ -3648,7 +3653,7 @@ static __rte_always_inline uint16_t
 async_poll_dequeue_completed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mbuf **pkts, uint16_t count, int16_t dma_id,
 		uint16_t vchan_id, bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	uint16_t start_idx, from, i;
 	uint16_t nr_cpl_pkts = 0;
@@ -3683,7 +3688,8 @@ async_poll_dequeue_completed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		vhost_vring_call_packed(dev, vq);
 	} else {
 		write_back_completed_descs_split(vq, nr_cpl_pkts);
-		__atomic_add_fetch(&vq->used->idx, nr_cpl_pkts, __ATOMIC_RELEASE);
+		rte_atomic_fetch_add_explicit((unsigned short __rte_atomic *)&vq->used->idx,
+			nr_cpl_pkts, rte_memory_order_release);
 		vhost_vring_call_split(dev, vq);
 	}
 	vq->async->pkts_inflight_n -= nr_cpl_pkts;
@@ -3695,7 +3701,7 @@ static __rte_always_inline uint16_t
 virtio_dev_tx_async_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts, uint16_t count,
 		int16_t dma_id, uint16_t vchan_id, bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	static bool allocerr_warned;
@@ -3714,8 +3720,8 @@ virtio_dev_tx_async_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	 * The ordering between avail index and
 	 * desc reads needs to be enforced.
 	 */
-	avail_entries = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE) -
-			vq->last_avail_idx;
+	avail_entries = rte_atomic_load_explicit((unsigned short __rte_atomic *)&vq->avail->idx,
+		rte_memory_order_acquire) - vq->last_avail_idx;
 	if (avail_entries == 0)
 		goto out;
 
@@ -3844,7 +3850,7 @@ virtio_dev_tx_async_split_legacy(struct virtio_net *dev,
 		struct vhost_virtqueue *vq, struct rte_mempool *mbuf_pool,
 		struct rte_mbuf **pkts, uint16_t count,
 		int16_t dma_id, uint16_t vchan_id)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_async_split(dev, vq, mbuf_pool,
@@ -3857,7 +3863,7 @@ virtio_dev_tx_async_split_compliant(struct virtio_net *dev,
 		struct vhost_virtqueue *vq, struct rte_mempool *mbuf_pool,
 		struct rte_mbuf **pkts, uint16_t count,
 		int16_t dma_id, uint16_t vchan_id)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_async_split(dev, vq, mbuf_pool,
@@ -3867,7 +3873,7 @@ virtio_dev_tx_async_split_compliant(struct virtio_net *dev,
 static __rte_always_inline void
 vhost_async_shadow_dequeue_single_packed(struct vhost_virtqueue *vq,
 				uint16_t buf_id, uint16_t count)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 {
 	struct vhost_async *async = vq->async;
 	uint16_t idx = async->buffer_idx_packed;
@@ -3889,7 +3895,7 @@ virtio_dev_tx_async_single_packed(struct virtio_net *dev,
 			struct rte_mbuf *pkts,
 			uint16_t slot_idx,
 			bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	int err;
@@ -3942,7 +3948,7 @@ virtio_dev_tx_async_packed_batch(struct virtio_net *dev,
 			   struct vhost_virtqueue *vq,
 			   struct rte_mbuf **pkts, uint16_t slot_idx,
 			   uint16_t dma_id, uint16_t vchan_id)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint16_t avail_idx = vq->last_avail_idx;
@@ -4000,7 +4006,7 @@ static __rte_always_inline uint16_t
 virtio_dev_tx_async_packed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts,
 		uint16_t count, uint16_t dma_id, uint16_t vchan_id, bool legacy_ol_flags)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	uint32_t pkt_idx = 0;
@@ -4111,7 +4117,7 @@ static uint16_t
 virtio_dev_tx_async_packed_legacy(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts,
 		uint16_t count, uint16_t dma_id, uint16_t vchan_id)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_async_packed(dev, vq, mbuf_pool,
@@ -4123,7 +4129,7 @@ static uint16_t
 virtio_dev_tx_async_packed_compliant(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts,
 		uint16_t count, uint16_t dma_id, uint16_t vchan_id)
-	__rte_exclusive_locks_required(&vq->access_lock)
+	__rte_shared_locks_required(&vq->access_lock)
 	__rte_shared_locks_required(&vq->iotlb_lock)
 {
 	return virtio_dev_tx_async_packed(dev, vq, mbuf_pool,
@@ -4173,7 +4179,7 @@ rte_vhost_async_try_dequeue_burst(int vid, uint16_t queue_id,
 
 	vq = dev->virtqueue[queue_id];
 
-	if (unlikely(rte_spinlock_trylock(&vq->access_lock) == 0))
+	if (unlikely(rte_rwlock_read_trylock(&vq->access_lock) != 0))
 		return 0;
 
 	if (unlikely(vq->enabled == 0)) {
@@ -4204,7 +4210,7 @@ rte_vhost_async_try_dequeue_burst(int vid, uint16_t queue_id,
 	 *
 	 * broadcast_rarp shares a cacheline in the virtio_net structure
 	 * with some fields that are accessed during enqueue and
-	 * __atomic_compare_exchange_n causes a write if performed compare
+	 * rte_atomic_compare_exchange_strong_explicit causes a write if performed compare
 	 * and exchange. This could result in false sharing between enqueue
 	 * and dequeue.
 	 *
@@ -4212,9 +4218,9 @@ rte_vhost_async_try_dequeue_burst(int vid, uint16_t queue_id,
 	 * and only performing compare and exchange if the read indicates it
 	 * is likely to be set.
 	 */
-	if (unlikely(__atomic_load_n(&dev->broadcast_rarp, __ATOMIC_ACQUIRE) &&
-			__atomic_compare_exchange_n(&dev->broadcast_rarp,
-			&success, 0, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED))) {
+	if (unlikely(rte_atomic_load_explicit(&dev->broadcast_rarp, rte_memory_order_acquire) &&
+			rte_atomic_compare_exchange_strong_explicit(&dev->broadcast_rarp,
+			&success, 0, rte_memory_order_release, rte_memory_order_relaxed))) {
 
 		rarp_mbuf = rte_net_make_rarp_packet(mbuf_pool, &dev->mac);
 		if (rarp_mbuf == NULL) {
@@ -4255,7 +4261,7 @@ out:
 	vhost_user_iotlb_rd_unlock(vq);
 
 out_access_unlock:
-	rte_spinlock_unlock(&vq->access_lock);
+	rte_rwlock_read_unlock(&vq->access_lock);
 
 	if (unlikely(rarp_mbuf != NULL))
 		count += 1;

@@ -411,7 +411,7 @@ dpaa2_eventdev_info_get(struct rte_eventdev *dev,
 		RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES |
 		RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
 		RTE_EVENT_DEV_CAP_MAINTENANCE_FREE;
-
+	dev_info->max_profiles_per_port = 1;
 }
 
 static int
@@ -1086,7 +1086,7 @@ dpaa2_eventdev_setup_dpci(struct dpaa2_dpci_dev *dpci_dev,
 }
 
 static int
-dpaa2_eventdev_create(const char *name)
+dpaa2_eventdev_create(const char *name, struct rte_vdev_device *vdev)
 {
 	struct rte_eventdev *eventdev;
 	struct dpaa2_eventdev *priv;
@@ -1096,7 +1096,7 @@ dpaa2_eventdev_create(const char *name)
 
 	eventdev = rte_event_pmd_vdev_init(name,
 					   sizeof(struct dpaa2_eventdev),
-					   rte_socket_id());
+					   rte_socket_id(), vdev);
 	if (eventdev == NULL) {
 		DPAA2_EVENTDEV_ERR("Failed to create Event device %s", name);
 		goto fail;
@@ -1190,7 +1190,7 @@ dpaa2_eventdev_probe(struct rte_vdev_device *vdev)
 
 	name = rte_vdev_device_name(vdev);
 	DPAA2_EVENTDEV_INFO("Initializing %s", name);
-	return dpaa2_eventdev_create(name);
+	return dpaa2_eventdev_create(name, vdev);
 }
 
 static int

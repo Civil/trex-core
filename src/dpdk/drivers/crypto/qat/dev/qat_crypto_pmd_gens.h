@@ -10,6 +10,13 @@
 #include "qat_sym_session.h"
 #include "qat_sym.h"
 
+#define AES_OR_3DES_MISALIGNED (ctx->qat_mode == ICP_QAT_HW_CIPHER_CBC_MODE && \
+			((((ctx->qat_cipher_alg == ICP_QAT_HW_CIPHER_ALGO_AES128) || \
+			(ctx->qat_cipher_alg == ICP_QAT_HW_CIPHER_ALGO_AES192) || \
+			(ctx->qat_cipher_alg == ICP_QAT_HW_CIPHER_ALGO_AES256)) && \
+			(cipher_param->cipher_length % ICP_QAT_HW_AES_BLK_SZ)) || \
+			((ctx->qat_cipher_alg == ICP_QAT_HW_CIPHER_ALGO_3DES) && \
+			(cipher_param->cipher_length % ICP_QAT_HW_3DES_BLK_SZ))))
 #define QAT_SYM_DP_GET_MAX_ENQ(q, c, n) \
 	RTE_MIN((q->max_inflights - q->enqueued + q->dequeued - c), n)
 
@@ -17,6 +24,7 @@
 	(ICP_QAT_FW_COMN_STATUS_FLAG_OK == \
 	ICP_QAT_FW_COMN_RESP_CRYPTO_STAT_GET(resp->comn_hdr.comn_status))
 
+#ifdef RTE_QAT_OPENSSL
 static __rte_always_inline int
 op_bpi_cipher_decrypt(uint8_t *src, uint8_t *dst,
 		uint8_t *iv, int ivlen, int srclen,
@@ -41,6 +49,7 @@ cipher_decrypt_err:
 	QAT_DP_LOG(ERR, "libcrypto ECB cipher decrypt for BPI IV failed");
 	return -EINVAL;
 }
+#endif
 
 static __rte_always_inline uint32_t
 qat_bpicipher_preprocess(struct qat_sym_session *ctx,
@@ -82,8 +91,13 @@ qat_bpicipher_preprocess(struct qat_sym_session *ctx,
 			QAT_DP_HEXDUMP_LOG(DEBUG, "BPI: dst before pre-process:",
 			dst, last_block_len);
 #endif
+#ifdef RTE_QAT_OPENSSL
 		op_bpi_cipher_decrypt(last_block, dst, iv, block_len,
 				last_block_len, ctx->bpi_ctx);
+#else
+		bpi_cipher_ipsec(last_block, dst, iv, last_block_len, ctx->expkey,
+			ctx->mb_mgr, ctx->docsis_key_len);
+#endif
 #if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
 		QAT_DP_HEXDUMP_LOG(DEBUG, "BPI: src after pre-process:",
 			last_block, last_block_len);
@@ -231,7 +245,12 @@ qat_sym_convert_op_to_vec_cipher(struct rte_crypto_op *op,
 		cipher_ofs = op->sym->cipher.data.offset >> 3;
 		break;
 	case 0:
+
+#ifdef RTE_QAT_OPENSSL
 		if (ctx->bpi_ctx) {
+#else
+		if (ctx->mb_mgr) {
+#endif
 			/* DOCSIS - only send complete blocks to device.
 			 * Process any partial block using CFB mode.
 			 * Even if 0 complete blocks, still send this to device
@@ -290,7 +309,8 @@ qat_sym_convert_op_to_vec_auth(struct rte_crypto_op *op,
 		struct rte_crypto_sgl *in_sgl, struct rte_crypto_sgl *out_sgl,
 		struct rte_crypto_va_iova_ptr *cipher_iv __rte_unused,
 		struct rte_crypto_va_iova_ptr *auth_iv,
-		struct rte_crypto_va_iova_ptr *digest)
+		struct rte_crypto_va_iova_ptr *digest,
+		struct qat_sym_op_cookie *cookie)
 {
 	uint32_t auth_ofs = 0, auth_len = 0;
 	int n_src, ret;
@@ -355,7 +375,11 @@ qat_sym_convert_op_to_vec_auth(struct rte_crypto_op *op,
 		out_sgl->num = 0;
 
 	digest->va = (void *)op->sym->auth.digest.data;
-	digest->iova = op->sym->auth.digest.phys_addr;
+
+	if (ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_NULL)
+		digest->iova = cookie->digest_null_phys_addr;
+	else
+		digest->iova = op->sym->auth.digest.phys_addr;
 
 	return 0;
 }
@@ -366,7 +390,8 @@ qat_sym_convert_op_to_vec_chain(struct rte_crypto_op *op,
 		struct rte_crypto_sgl *in_sgl, struct rte_crypto_sgl *out_sgl,
 		struct rte_crypto_va_iova_ptr *cipher_iv,
 		struct rte_crypto_va_iova_ptr *auth_iv_or_aad,
-		struct rte_crypto_va_iova_ptr *digest)
+		struct rte_crypto_va_iova_ptr *digest,
+		struct qat_sym_op_cookie *cookie)
 {
 	union rte_crypto_sym_ofs ofs;
 	uint32_t max_len = 0;
@@ -375,6 +400,7 @@ qat_sym_convert_op_to_vec_chain(struct rte_crypto_op *op,
 	int is_oop = (op->sym->m_dst != NULL) &&
 			(op->sym->m_dst != op->sym->m_src);
 	int is_sgl = op->sym->m_src->nb_segs > 1;
+	int is_bpi = 0;
 	int n_src;
 	int ret;
 
@@ -390,7 +416,11 @@ qat_sym_convert_op_to_vec_chain(struct rte_crypto_op *op,
 	auth_iv_or_aad->iova = rte_crypto_op_ctophys_offset(op,
 			ctx->auth_iv.offset);
 	digest->va = (void *)op->sym->auth.digest.data;
-	digest->iova = op->sym->auth.digest.phys_addr;
+
+	if (ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_NULL)
+		digest->iova = cookie->digest_null_phys_addr;
+	else
+		digest->iova = op->sym->auth.digest.phys_addr;
 
 	ret = qat_cipher_is_len_in_bits(ctx, op);
 	switch (ret) {
@@ -399,8 +429,18 @@ qat_sym_convert_op_to_vec_chain(struct rte_crypto_op *op,
 		cipher_ofs = op->sym->cipher.data.offset >> 3;
 		break;
 	case 0:
-		cipher_len = op->sym->cipher.data.length;
-		cipher_ofs = op->sym->cipher.data.offset;
+#ifdef RTE_QAT_OPENSSL
+		if (ctx->bpi_ctx) {
+#else
+		if (ctx->mb_mgr) {
+#endif
+			cipher_len = qat_bpicipher_preprocess(ctx, op);
+			cipher_ofs = op->sym->cipher.data.offset;
+			is_bpi = 1;
+		} else {
+			cipher_len = op->sym->cipher.data.length;
+			cipher_ofs = op->sym->cipher.data.offset;
+		}
 		break;
 	default:
 		QAT_DP_LOG(ERR,
@@ -428,8 +468,10 @@ qat_sym_convert_op_to_vec_chain(struct rte_crypto_op *op,
 
 	max_len = RTE_MAX(cipher_ofs + cipher_len, auth_ofs + auth_len);
 
-	/* digest in buffer check. Needed only for wireless algos */
-	if (ret == 1) {
+	/* digest in buffer check. Needed only for wireless algos
+	 * or combined cipher-crc operations
+	 */
+	if (ret == 1 || is_bpi) {
 		/* Handle digest-encrypted cases, i.e.
 		 * auth-gen-then-cipher-encrypt and
 		 * cipher-decrypt-then-auth-verify
@@ -456,8 +498,13 @@ qat_sym_convert_op_to_vec_chain(struct rte_crypto_op *op,
 					auth_len;
 
 		/* Then check if digest-encrypted conditions are met */
-		if ((auth_ofs + auth_len < cipher_ofs + cipher_len) &&
-				(digest->iova == auth_end_iova))
+		if (((auth_ofs + auth_len < cipher_ofs + cipher_len) &&
+				(digest->iova == auth_end_iova)) ||
+#ifdef RTE_QAT_OPENSSL
+				ctx->bpi_ctx)
+#else
+				ctx->mb_mgr)
+#endif
 			max_len = RTE_MAX(max_len, auth_ofs + auth_len +
 					ctx->digest_length);
 	}
@@ -571,7 +618,8 @@ static __rte_always_inline void
 enqueue_one_cipher_job_gen1(struct qat_sym_session *ctx,
 	struct icp_qat_fw_la_bulk_req *req,
 	struct rte_crypto_va_iova_ptr *iv,
-	union rte_crypto_sym_ofs ofs, uint32_t data_len)
+	union rte_crypto_sym_ofs ofs, uint32_t data_len,
+	struct qat_sym_op_cookie *cookie)
 {
 	struct icp_qat_fw_la_cipher_req_params *cipher_param;
 
@@ -582,6 +630,15 @@ enqueue_one_cipher_job_gen1(struct qat_sym_session *ctx,
 	cipher_param->cipher_offset = ofs.ofs.cipher.head;
 	cipher_param->cipher_length = data_len - ofs.ofs.cipher.head -
 			ofs.ofs.cipher.tail;
+
+	if (AES_OR_3DES_MISALIGNED) {
+		QAT_LOG(DEBUG,
+	  "Input cipher buffer misalignment detected and change job as NULL operation");
+		struct icp_qat_fw_comn_req_hdr *header = &req->comn_hdr;
+		header->service_type = ICP_QAT_FW_COMN_REQ_NULL;
+		header->service_cmd_id = ICP_QAT_FW_NULL_REQ_SERV_ID;
+		cookie->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+	}
 }
 
 static __rte_always_inline void
@@ -617,6 +674,12 @@ enqueue_one_auth_job_gen1(struct qat_sym_session *ctx,
 		rte_memcpy(cipher_param->u.cipher_IV_array, auth_iv->va,
 				ctx->auth_iv.length);
 		break;
+	case ICP_QAT_HW_AUTH_ALGO_SM3:
+		if (ctx->auth_mode == ICP_QAT_HW_AUTH_MODE0)
+			auth_param->u1.aad_adr = 0;
+		else
+			auth_param->u1.aad_adr = ctx->prefix_paddr;
+		break;
 	default:
 		break;
 	}
@@ -632,7 +695,8 @@ enqueue_one_chain_job_gen1(struct qat_sym_session *ctx,
 	struct rte_crypto_va_iova_ptr *cipher_iv,
 	struct rte_crypto_va_iova_ptr *digest,
 	struct rte_crypto_va_iova_ptr *auth_iv,
-	union rte_crypto_sym_ofs ofs, uint32_t data_len)
+	union rte_crypto_sym_ofs ofs, uint32_t data_len,
+	struct qat_sym_op_cookie *cookie)
 {
 	struct icp_qat_fw_la_cipher_req_params *cipher_param;
 	struct icp_qat_fw_la_auth_req_params *auth_param;
@@ -660,6 +724,23 @@ enqueue_one_chain_job_gen1(struct qat_sym_session *ctx,
 	auth_param->auth_off = ofs.ofs.auth.head;
 	auth_param->auth_len = auth_len;
 	auth_param->auth_res_addr = digest->iova;
+	/* Input cipher length alignment requirement for 3DES-CBC and AES-CBC.
+	 * For 3DES-CBC cipher algo, ESP Payload size requires 8 Byte aligned.
+	 * For AES-CBC cipher algo, ESP Payload size requires 16 Byte aligned.
+	 * The alignment should be guaranteed by the ESP package padding field
+	 * according to the RFC4303. Under this condition, QAT will pass through
+	 * chain job as NULL cipher and NULL auth operation and report misalignment
+	 * error detected.
+	 */
+	if (AES_OR_3DES_MISALIGNED) {
+		QAT_LOG(DEBUG,
+	  "Input cipher buffer misalignment detected and change job as NULL operation");
+		struct icp_qat_fw_comn_req_hdr *header = &req->comn_hdr;
+		header->service_type = ICP_QAT_FW_COMN_REQ_NULL;
+		header->service_cmd_id = ICP_QAT_FW_NULL_REQ_SERV_ID;
+		cookie->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		return -1;
+	}
 
 	switch (ctx->qat_hash_alg) {
 	case ICP_QAT_HW_AUTH_ALGO_SNOW_3G_UIA2:
@@ -669,6 +750,12 @@ enqueue_one_chain_job_gen1(struct qat_sym_session *ctx,
 		break;
 	case ICP_QAT_HW_AUTH_ALGO_GALOIS_128:
 	case ICP_QAT_HW_AUTH_ALGO_GALOIS_64:
+		break;
+	case ICP_QAT_HW_AUTH_ALGO_SM3:
+		if (ctx->auth_mode == ICP_QAT_HW_AUTH_MODE0)
+			auth_param->u1.aad_adr = 0;
+		else
+			auth_param->u1.aad_adr = ctx->prefix_paddr;
 		break;
 	default:
 		break;
@@ -682,7 +769,8 @@ enqueue_one_chain_job_gen1(struct qat_sym_session *ctx,
 		while (remaining_off >= cvec->len && i >= 1) {
 			i--;
 			remaining_off -= cvec->len;
-			cvec++;
+			if (i)
+				cvec++;
 		}
 
 		auth_iova_end = cvec->iova + remaining_off;
@@ -691,9 +779,14 @@ enqueue_one_chain_job_gen1(struct qat_sym_session *ctx,
 			auth_param->auth_len;
 
 	/* Then check if digest-encrypted conditions are met */
-	if ((auth_param->auth_off + auth_param->auth_len <
+	if (((auth_param->auth_off + auth_param->auth_len <
 		cipher_param->cipher_offset + cipher_param->cipher_length) &&
-			(digest->iova == auth_iova_end)) {
+			(digest->iova == auth_iova_end)) ||
+#ifdef RTE_QAT_OPENSSL
+			ctx->bpi_ctx) {
+#else
+			ctx->mb_mgr) {
+#endif
 		/* Handle partial digest encryption */
 		if (cipher_param->cipher_offset + cipher_param->cipher_length <
 			auth_param->auth_off + auth_param->auth_len +
@@ -938,11 +1031,9 @@ qat_asym_crypto_feature_flags_get_gen1(struct qat_pci_device *qat_dev);
 int
 qat_asym_crypto_set_session_gen1(void *cryptodev, void *session);
 
-#ifdef RTE_LIB_SECURITY
 extern struct rte_security_ops security_qat_ops_gen1;
 
 void *
 qat_sym_create_security_gen1(void *cryptodev);
-#endif
 
 #endif

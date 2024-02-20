@@ -10,10 +10,10 @@
 
 #include "roc_cpt.h"
 
-#define CNXK_CPT_MAX_CAPS	 48
+#define CNXK_CPT_MAX_CAPS	 55
 #define CNXK_SEC_CRYPTO_MAX_CAPS 16
 #define CNXK_SEC_MAX_CAPS	 9
-#define CNXK_AE_EC_ID_MAX	 8
+#define CNXK_AE_EC_ID_MAX	 9
 /**
  * Device private data
  */

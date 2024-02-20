@@ -543,7 +543,7 @@ mlx5_devx_cmd_query_hca_vdpa_attr(void *ctx,
 			MLX5_GET_HCA_CAP_OP_MOD_VDPA_EMULATION |
 			MLX5_HCA_CAP_OPMOD_GET_CUR);
 	if (!hcattr) {
-		RTE_LOG(DEBUG, PMD, "Failed to query devx VDPA capabilities");
+		DRV_LOG(DEBUG, "Failed to query devx VDPA capabilities");
 		vdpa_attr->valid = 0;
 	} else {
 		vdpa_attr->valid = 1;
@@ -1062,6 +1062,8 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 	attr->cqe_compression = MLX5_GET(cmd_hca_cap, hcattr, cqe_compression);
 	attr->mini_cqe_resp_flow_tag = MLX5_GET(cmd_hca_cap, hcattr,
 						mini_cqe_resp_flow_tag);
+	attr->cqe_compression_128 = MLX5_GET(cmd_hca_cap, hcattr,
+						cqe_compression_128);
 	attr->mini_cqe_resp_l3_l4_tag = MLX5_GET(cmd_hca_cap, hcattr,
 						 mini_cqe_resp_l3_l4_tag);
 	attr->enhanced_cqe_compression = MLX5_GET(cmd_hca_cap, hcattr,
@@ -1076,6 +1078,11 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 					 general_obj_types) &
 			      MLX5_GENERAL_OBJ_TYPES_CAP_CONN_TRACK_OFFLOAD);
 	attr->rq_delay_drop = MLX5_GET(cmd_hca_cap, hcattr, rq_delay_drop);
+	attr->nic_flow_table = MLX5_GET(cmd_hca_cap, hcattr, nic_flow_table);
+	attr->striding_rq = MLX5_GET(cmd_hca_cap, hcattr, striding_rq);
+	attr->ext_stride_num_range =
+		MLX5_GET(cmd_hca_cap, hcattr, ext_stride_num_range);
+	attr->nic_flow_table = MLX5_GET(cmd_hca_cap, hcattr, nic_flow_table);
 	attr->max_flow_counter_15_0 = MLX5_GET(cmd_hca_cap, hcattr,
 			max_flow_counter_15_0);
 	attr->max_flow_counter_31_16 = MLX5_GET(cmd_hca_cap, hcattr,
@@ -1086,6 +1093,8 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 			flow_counter_access_aso);
 	attr->flow_access_aso_opc_mod = MLX5_GET(cmd_hca_cap, hcattr,
 			flow_access_aso_opc_mod);
+	attr->wqe_based_flow_table_sup = MLX5_GET(cmd_hca_cap, hcattr,
+			wqe_based_flow_table_update_cap);
 	/*
 	 * Flex item support needs max_num_prog_sample_field
 	 * from the Capabilities 2 table for PARSE_GRAPH_NODE
@@ -1110,6 +1119,21 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 		attr->crypto_wrapped_import_method = !!(MLX5_GET(crypto_caps,
 						hcattr, wrapped_import_method)
 						& 1 << 2);
+		attr->crypto_mmo.crypto_mmo_qp = MLX5_GET(crypto_caps, hcattr, crypto_mmo_qp);
+		attr->crypto_mmo.gcm_256_encrypt =
+			MLX5_GET(crypto_caps, hcattr, crypto_aes_gcm_256_encrypt);
+		attr->crypto_mmo.gcm_128_encrypt =
+			MLX5_GET(crypto_caps, hcattr, crypto_aes_gcm_128_encrypt);
+		attr->crypto_mmo.gcm_256_decrypt =
+			MLX5_GET(crypto_caps, hcattr, crypto_aes_gcm_256_decrypt);
+		attr->crypto_mmo.gcm_128_decrypt =
+			MLX5_GET(crypto_caps, hcattr, crypto_aes_gcm_128_decrypt);
+		attr->crypto_mmo.gcm_auth_tag_128 =
+			MLX5_GET(crypto_caps, hcattr, gcm_auth_tag_128);
+		attr->crypto_mmo.gcm_auth_tag_96 =
+			MLX5_GET(crypto_caps, hcattr, gcm_auth_tag_96);
+		attr->crypto_mmo.log_crypto_mmo_max_size =
+			MLX5_GET(crypto_caps, hcattr, log_crypto_mmo_max_size);
 	}
 	if (hca_cap_2_sup) {
 		hcattr = mlx5_devx_get_hca_cap(ctx, in, out, &rc,
@@ -1205,7 +1229,7 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 	attr->modify_outer_ip_ecn = MLX5_GET
 		(flow_table_nic_cap, hcattr,
 		 ft_header_modify_nic_receive.outer_ip_ecn);
-	attr->set_reg_c = 0xff;
+	attr->set_reg_c = 0xffff;
 	if (attr->nic_flow_table) {
 #define GET_RX_REG_X_BITS \
 		MLX5_GET(flow_table_nic_cap, hcattr, \
@@ -1214,10 +1238,16 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 		MLX5_GET(flow_table_nic_cap, hcattr, \
 			 ft_header_modify_nic_transmit.metadata_reg_c_x)
 
-		uint32_t tx_reg, rx_reg;
+		uint32_t tx_reg, rx_reg, reg_c_8_15;
 
 		tx_reg = GET_TX_REG_X_BITS;
+		reg_c_8_15 = MLX5_GET(flow_table_nic_cap, hcattr,
+				      ft_field_support_2_nic_transmit.metadata_reg_c_8_15);
+		tx_reg |= ((0xff & reg_c_8_15) << 8);
 		rx_reg = GET_RX_REG_X_BITS;
+		reg_c_8_15 = MLX5_GET(flow_table_nic_cap, hcattr,
+				      ft_field_support_2_nic_receive.metadata_reg_c_8_15);
+		rx_reg |= ((0xff & reg_c_8_15) << 8);
 		attr->set_reg_c &= (rx_reg & tx_reg);
 
 #undef GET_RX_REG_X_BITS
@@ -1290,9 +1320,30 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 	attr->tunnel_stateless_gtp = MLX5_GET
 					(per_protocol_networking_offload_caps,
 					 hcattr, tunnel_stateless_gtp);
+	attr->tunnel_stateless_vxlan_gpe_nsh = MLX5_GET
+					(per_protocol_networking_offload_caps,
+					 hcattr, tunnel_stateless_vxlan_gpe_nsh);
 	attr->rss_ind_tbl_cap = MLX5_GET
 					(per_protocol_networking_offload_caps,
 					 hcattr, rss_ind_tbl_cap);
+	attr->multi_pkt_send_wqe = MLX5_GET
+					(per_protocol_networking_offload_caps,
+					 hcattr, multi_pkt_send_wqe);
+	attr->enhanced_multi_pkt_send_wqe = MLX5_GET
+					(per_protocol_networking_offload_caps,
+					 hcattr, enhanced_multi_pkt_send_wqe);
+	if (attr->wqe_based_flow_table_sup) {
+		hcattr = mlx5_devx_get_hca_cap(ctx, in, out, &rc,
+				MLX5_GET_HCA_CAP_OP_MOD_WQE_BASED_FLOW_TABLE |
+				MLX5_HCA_CAP_OPMOD_GET_CUR);
+		if (!hcattr) {
+			DRV_LOG(DEBUG, "Failed to query WQE Based Flow table capabilities");
+			return rc;
+		}
+		attr->max_header_modify_pattern_length = MLX5_GET(wqe_based_flow_table_cap,
+								  hcattr,
+								  max_header_modify_pattern_length);
+	}
 	/* Query HCA attribute for ROCE. */
 	if (attr->roce) {
 		hcattr = mlx5_devx_get_hca_cap(ctx, in, out, &rc,
@@ -1326,7 +1377,7 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 			MLX5_GET(esw_cap, hcattr, esw_manager_vport_number);
 	}
 	if (attr->eswitch_manager) {
-		uint32_t esw_reg;
+		uint32_t esw_reg, reg_c_8_15;
 
 		hcattr = mlx5_devx_get_hca_cap(ctx, in, out, &rc,
 				MLX5_GET_HCA_CAP_OP_MOD_ESW_FLOW_TABLE |
@@ -1335,7 +1386,9 @@ mlx5_devx_cmd_query_hca_attr(void *ctx,
 			return rc;
 		esw_reg = MLX5_GET(flow_table_esw_cap, hcattr,
 				   ft_header_modify_esw_fdb.metadata_reg_c_x);
-		attr->set_reg_c &= esw_reg;
+		reg_c_8_15 = MLX5_GET(flow_table_esw_cap, hcattr,
+				      ft_field_support_2_esw_fdb.metadata_reg_c_8_15);
+		attr->set_reg_c &= ((0xff & reg_c_8_15) << 8) | esw_reg;
 	}
 	return 0;
 error:
@@ -2435,6 +2488,12 @@ mlx5_devx_cmd_create_qp(void *ctx,
 				 attr->dbr_umem_valid);
 			MLX5_SET(qpc, qpc, dbr_umem_id, attr->dbr_umem_id);
 		}
+		if (attr->cd_master)
+			MLX5_SET(qpc, qpc, cd_master, attr->cd_master);
+		if (attr->cd_slave_send)
+			MLX5_SET(qpc, qpc, cd_slave_send, attr->cd_slave_send);
+		if (attr->cd_slave_recv)
+			MLX5_SET(qpc, qpc, cd_slave_receive, attr->cd_slave_recv);
 		MLX5_SET64(qpc, qpc, dbr_addr, attr->dbr_address);
 		MLX5_SET64(create_qp_in, in, wq_umem_offset,
 			   attr->wq_umem_offset);

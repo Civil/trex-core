@@ -609,6 +609,7 @@ sw_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *info)
 				RTE_EVENT_DEV_CAP_NONSEQ_MODE |
 				RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
 				RTE_EVENT_DEV_CAP_MAINTENANCE_FREE),
+			.max_profiles_per_port = 1,
 	};
 
 	*info = evdev_sw_info;
@@ -1074,7 +1075,7 @@ sw_probe(struct rte_vdev_device *vdev)
 			min_burst_size, deq_burst_size, refill_once);
 
 	dev = rte_event_pmd_vdev_init(name,
-			sizeof(struct sw_evdev), socket_id);
+			sizeof(struct sw_evdev), socket_id, vdev);
 	if (dev == NULL) {
 		SW_LOG_ERR("eventdev vdev init() failed");
 		return -EFAULT;

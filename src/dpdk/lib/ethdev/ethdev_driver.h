@@ -16,8 +16,9 @@ extern "C" {
  *
  * These APIs for the use from Ethernet drivers, user applications shouldn't
  * use them.
- *
  */
+
+#include <pthread.h>
 
 #include <dev_driver.h>
 #include <rte_compat.h>
@@ -29,7 +30,7 @@ extern "C" {
  * queue on Rx and Tx.
  */
 struct rte_eth_rxtx_callback {
-	struct rte_eth_rxtx_callback *next;
+	RTE_ATOMIC(struct rte_eth_rxtx_callback *) next;
 	union{
 		rte_rx_callback_fn rx;
 		rte_tx_callback_fn tx;
@@ -59,6 +60,10 @@ struct rte_eth_dev {
 	eth_rx_descriptor_status_t rx_descriptor_status;
 	/** Check the status of a Tx descriptor */
 	eth_tx_descriptor_status_t tx_descriptor_status;
+	/** Pointer to PMD transmit mbufs reuse function */
+	eth_recycle_tx_mbufs_reuse_t recycle_tx_mbufs_reuse;
+	/** Pointer to PMD receive descriptors refill function */
+	eth_recycle_rx_descriptors_refill_t recycle_rx_descriptors_refill;
 
 	/**
 	 * Device data that is shared between primary and secondary processes
@@ -75,12 +80,12 @@ struct rte_eth_dev {
 	 * User-supplied functions called from rx_burst to post-process
 	 * received packets before passing them to the user
 	 */
-	struct rte_eth_rxtx_callback *post_rx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+	RTE_ATOMIC(struct rte_eth_rxtx_callback *) post_rx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
 	/**
 	 * User-supplied functions called from tx_burst to pre-process
 	 * received packets before passing them to the driver for transmission
 	 */
-	struct rte_eth_rxtx_callback *pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+	RTE_ATOMIC(struct rte_eth_rxtx_callback *) pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
 
 	enum rte_eth_dev_state state; /**< Flag indicating the port state */
 	void *security_ctx; /**< Context for security ops */
@@ -117,7 +122,11 @@ struct rte_eth_dev_data {
 
 	uint64_t rx_mbuf_alloc_failed; /**< Rx ring mbuf allocation failures */
 
-	/** Device Ethernet link address. @see rte_eth_dev_release_port() */
+	/**
+	 * Device Ethernet link addresses.
+	 * All entries are unique.
+	 * The first entry (index zero) is the default address.
+	 */
 	struct rte_ether_addr *mac_addrs;
 	/** Bitmap associating MAC addresses to pools */
 	uint64_t mac_pool_sel[RTE_ETH_NUM_RECEIVE_MAC_ADDR];
@@ -503,6 +512,10 @@ typedef void (*eth_rxq_info_get_t)(struct rte_eth_dev *dev,
 
 typedef void (*eth_txq_info_get_t)(struct rte_eth_dev *dev,
 	uint16_t tx_queue_id, struct rte_eth_txq_info *qinfo);
+
+typedef void (*eth_recycle_rxq_info_get_t)(struct rte_eth_dev *dev,
+	uint16_t rx_queue_id,
+	struct rte_eth_recycle_rxq_info *recycle_rxq_info);
 
 typedef int (*eth_burst_mode_get_t)(struct rte_eth_dev *dev,
 	uint16_t queue_id, struct rte_eth_burst_mode *mode);
@@ -1247,6 +1260,8 @@ struct eth_dev_ops {
 	eth_rxq_info_get_t         rxq_info_get;
 	/** Retrieve Tx queue information */
 	eth_txq_info_get_t         txq_info_get;
+	/** Retrieve mbufs recycle Rx queue information */
+	eth_recycle_rxq_info_get_t recycle_rxq_info_get;
 	eth_burst_mode_get_t       rx_burst_mode_get; /**< Get Rx burst mode */
 	eth_burst_mode_get_t       tx_burst_mode_get; /**< Get Tx burst mode */
 	eth_fw_version_get_t       fw_version_get; /**< Get firmware version */
@@ -1640,7 +1655,7 @@ static inline int
 rte_eth_linkstatus_set(struct rte_eth_dev *dev,
 		       const struct rte_eth_link *new_link)
 {
-	uint64_t *dev_link = (uint64_t *)&(dev->data->dev_link);
+	RTE_ATOMIC(uint64_t) *dev_link = (uint64_t __rte_atomic *)&(dev->data->dev_link);
 	union {
 		uint64_t val64;
 		struct rte_eth_link link;
@@ -1648,8 +1663,8 @@ rte_eth_linkstatus_set(struct rte_eth_dev *dev,
 
 	RTE_BUILD_BUG_ON(sizeof(*new_link) != sizeof(uint64_t));
 
-	orig.val64 = __atomic_exchange_n(dev_link, *(const uint64_t *)new_link,
-					__ATOMIC_SEQ_CST);
+	orig.val64 = rte_atomic_exchange_explicit(dev_link, *(const uint64_t *)new_link,
+					rte_memory_order_seq_cst);
 
 	return (orig.link.link_status == new_link->link_status) ? -1 : 0;
 }
@@ -1667,12 +1682,12 @@ static inline void
 rte_eth_linkstatus_get(const struct rte_eth_dev *dev,
 		       struct rte_eth_link *link)
 {
-	uint64_t *src = (uint64_t *)&(dev->data->dev_link);
+	RTE_ATOMIC(uint64_t) *src = (uint64_t __rte_atomic *)&(dev->data->dev_link);
 	uint64_t *dst = (uint64_t *)link;
 
 	RTE_BUILD_BUG_ON(sizeof(*link) != sizeof(uint64_t));
 
-	*dst = __atomic_load_n(src, __ATOMIC_SEQ_CST);
+	*dst = rte_atomic_load_explicit(src, rte_memory_order_seq_cst);
 }
 
 /**
@@ -2047,8 +2062,6 @@ struct rte_eth_tunnel_filter_conf {
 	uint16_t queue_id;      /**< Queue assigned to if match */
 };
 
-#ifndef TREX_PATCH
-
 /**
  *  Memory space that can be configured to store Flow Director filters
  *  in the board memory.
@@ -2084,8 +2097,6 @@ struct rte_eth_fdir_conf {
 	/** Flex payload configuration. */
 	struct rte_eth_fdir_flex_conf flex_conf;
 };
-
-#endif
 
 #ifdef __cplusplus
 }

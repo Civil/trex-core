@@ -2,7 +2,6 @@
  * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#include <linux/pci_regs.h>
 #include <rte_alarm.h>
 #include <ethdev_pci.h>
 #include <rte_io.h>
@@ -49,115 +48,35 @@ static int hns3vf_remove_mc_mac_addr(struct hns3_hw *hw,
 static int hns3vf_dev_link_update(struct rte_eth_dev *eth_dev,
 				   __rte_unused int wait_to_complete);
 
-/* set PCI bus mastering */
-static int
-hns3vf_set_bus_master(const struct rte_pci_device *device, bool op)
-{
-	uint16_t reg;
-	int ret;
-
-	ret = rte_pci_read_config(device, &reg, sizeof(reg), PCI_COMMAND);
-	if (ret < 0) {
-		PMD_INIT_LOG(ERR, "Failed to read PCI offset 0x%x",
-			     PCI_COMMAND);
-		return ret;
-	}
-
-	if (op)
-		/* set the master bit */
-		reg |= PCI_COMMAND_MASTER;
-	else
-		reg &= ~(PCI_COMMAND_MASTER);
-
-	return rte_pci_write_config(device, &reg, sizeof(reg), PCI_COMMAND);
-}
-
-/**
- * hns3vf_find_pci_capability - lookup a capability in the PCI capability list
- * @cap: the capability
- *
- * Return the address of the given capability within the PCI capability list.
- */
-static int
-hns3vf_find_pci_capability(const struct rte_pci_device *device, int cap)
-{
-#define MAX_PCIE_CAPABILITY 48
-	uint16_t status;
-	uint8_t pos;
-	uint8_t id;
-	int ttl;
-	int ret;
-
-	ret = rte_pci_read_config(device, &status, sizeof(status), PCI_STATUS);
-	if (ret < 0) {
-		PMD_INIT_LOG(ERR, "Failed to read PCI offset 0x%x", PCI_STATUS);
-		return 0;
-	}
-
-	if (!(status & PCI_STATUS_CAP_LIST))
-		return 0;
-
-	ttl = MAX_PCIE_CAPABILITY;
-	ret = rte_pci_read_config(device, &pos, sizeof(pos),
-				  PCI_CAPABILITY_LIST);
-	if (ret < 0) {
-		PMD_INIT_LOG(ERR, "Failed to read PCI offset 0x%x",
-			     PCI_CAPABILITY_LIST);
-		return 0;
-	}
-
-	while (ttl-- && pos >= PCI_STD_HEADER_SIZEOF) {
-		ret = rte_pci_read_config(device, &id, sizeof(id),
-					  (pos + PCI_CAP_LIST_ID));
-		if (ret < 0) {
-			PMD_INIT_LOG(ERR, "Failed to read PCI offset 0x%x",
-				     (pos + PCI_CAP_LIST_ID));
-			break;
-		}
-
-		if (id == 0xFF)
-			break;
-
-		if (id == cap)
-			return (int)pos;
-
-		ret = rte_pci_read_config(device, &pos, sizeof(pos),
-					  (pos + PCI_CAP_LIST_NEXT));
-		if (ret < 0) {
-			PMD_INIT_LOG(ERR, "Failed to read PCI offset 0x%x",
-				     (pos + PCI_CAP_LIST_NEXT));
-			break;
-		}
-	}
-	return 0;
-}
-
 static int
 hns3vf_enable_msix(const struct rte_pci_device *device, bool op)
 {
 	uint16_t control;
-	int pos;
+	off_t pos;
 	int ret;
 
-	pos = hns3vf_find_pci_capability(device, PCI_CAP_ID_MSIX);
-	if (pos) {
+	if (!rte_pci_has_capability_list(device)) {
+		PMD_INIT_LOG(ERR, "Failed to read PCI capability list");
+		return 0;
+	}
+
+	pos = rte_pci_find_capability(device, RTE_PCI_CAP_ID_MSIX);
+	if (pos > 0) {
 		ret = rte_pci_read_config(device, &control, sizeof(control),
-					  (pos + PCI_MSIX_FLAGS));
+			pos + RTE_PCI_MSIX_FLAGS);
 		if (ret < 0) {
-			PMD_INIT_LOG(ERR, "Failed to read PCI offset 0x%x",
-				     (pos + PCI_MSIX_FLAGS));
+			PMD_INIT_LOG(ERR, "Failed to read MSIX flags");
 			return -ENXIO;
 		}
 
 		if (op)
-			control |= PCI_MSIX_FLAGS_ENABLE;
+			control |= RTE_PCI_MSIX_FLAGS_ENABLE;
 		else
-			control &= ~PCI_MSIX_FLAGS_ENABLE;
+			control &= ~RTE_PCI_MSIX_FLAGS_ENABLE;
 		ret = rte_pci_write_config(device, &control, sizeof(control),
-					   (pos + PCI_MSIX_FLAGS));
+			pos + RTE_PCI_MSIX_FLAGS);
 		if (ret < 0) {
-			PMD_INIT_LOG(ERR, "failed to write PCI offset 0x%x",
-				     (pos + PCI_MSIX_FLAGS));
+			PMD_INIT_LOG(ERR, "failed to write MSIX flags");
 			return -ENXIO;
 		}
 
@@ -250,6 +169,8 @@ hns3vf_set_default_mac_addr(struct rte_eth_dev *dev,
 			hns3_err(hw, "Failed to set mac addr(%s) for vf: %d",
 				 mac_str, ret);
 		}
+		rte_spinlock_unlock(&hw->lock);
+		return ret;
 	}
 
 	rte_ether_addr_copy(mac_addr,
@@ -610,6 +531,19 @@ hns3vf_enable_irq0(struct hns3_hw *hw)
 	hns3_write_dev(hw, HNS3_MISC_VECTOR_REG_BASE, 1);
 }
 
+void
+hns3vf_clear_reset_event(struct hns3_hw *hw)
+{
+	uint32_t clearval;
+	uint32_t cmdq_stat_reg;
+
+	cmdq_stat_reg = hns3_read_dev(hw, HNS3_VECTOR0_CMDQ_STAT_REG);
+	clearval = cmdq_stat_reg & ~BIT(HNS3_VECTOR0_RST_INT_B);
+	hns3_write_dev(hw, HNS3_VECTOR0_CMDQ_SRC_REG, clearval);
+
+	hns3vf_enable_irq0(hw);
+}
+
 static enum hns3vf_evt_cause
 hns3vf_check_event_cause(struct hns3_adapter *hns, uint32_t *clearval)
 {
@@ -684,8 +618,10 @@ hns3vf_interrupt_handler(void *param)
 		break;
 	}
 
-	/* Enable interrupt */
-	hns3vf_enable_irq0(hw);
+	/* Enable interrupt if it is not caused by reset */
+	if (event_cause == HNS3VF_VECTOR0_EVENT_MBX ||
+	    event_cause == HNS3VF_VECTOR0_EVENT_OTHER)
+		hns3vf_enable_irq0(hw);
 }
 
 void
@@ -759,10 +695,6 @@ static int
 hns3vf_get_capability(struct hns3_hw *hw)
 {
 	int ret;
-
-	ret = hns3_get_pci_revision_id(hw, &hw->revision);
-	if (ret)
-		return ret;
 
 	if (hw->revision < PCI_REVISION_ID_HIP09_A) {
 		hns3_set_default_dev_specifications(hw);
@@ -1416,6 +1348,10 @@ hns3vf_init_vf(struct rte_eth_dev *eth_dev)
 	/* Get hardware io base address from pcie BAR2 IO space */
 	hw->io_base = pci_dev->mem_resource[2].addr;
 
+	ret = hns3_get_pci_revision_id(hw, &hw->revision);
+	if (ret)
+		return ret;
+
 	/* Firmware command queue initialize */
 	ret = hns3_cmd_init_queue(hw);
 	if (ret) {
@@ -1674,8 +1610,10 @@ hns3vf_do_start(struct hns3_adapter *hns, bool reset_queue)
 	hns3_enable_rxd_adv_layout(hw);
 
 	ret = hns3_init_queues(hns, reset_queue);
-	if (ret)
+	if (ret) {
 		hns3_err(hw, "failed to init queues, ret = %d.", ret);
+		return ret;
+	}
 
 	return hns3_restore_filter(hns);
 }
@@ -1792,14 +1730,13 @@ hns3vf_is_reset_pending(struct hns3_adapter *hns)
 		return false;
 
 	/*
-	 * Check the registers to confirm whether there is reset pending.
-	 * Note: This check may lead to schedule reset task, but only primary
-	 *       process can process the reset event. Therefore, limit the
-	 *       checking under only primary process.
+	 * Only primary can process can process the reset event,
+	 * so don't check reset event in secondary.
 	 */
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
-		hns3vf_check_event_cause(hns, NULL);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return false;
 
+	hns3vf_check_event_cause(hns, NULL);
 	reset = hns3vf_get_reset_level(hw, &hw->reset.pending);
 	if (hw->reset.level != HNS3_NONE_RESET && reset != HNS3_NONE_RESET &&
 	    hw->reset.level < reset) {
@@ -2138,7 +2075,7 @@ hns3vf_reinit_dev(struct hns3_adapter *hns)
 
 	if (hw->reset.level == HNS3_VF_FULL_RESET) {
 		rte_intr_disable(pci_dev->intr_handle);
-		ret = hns3vf_set_bus_master(pci_dev, true);
+		ret = rte_pci_set_bus_master(pci_dev, true);
 		if (ret < 0) {
 			hns3_err(hw, "failed to set pci bus, ret = %d", ret);
 			return ret;
@@ -2159,8 +2096,11 @@ hns3vf_reinit_dev(struct hns3_adapter *hns)
 		 */
 		if (pci_dev->kdrv == RTE_PCI_KDRV_IGB_UIO ||
 		    pci_dev->kdrv == RTE_PCI_KDRV_UIO_GENERIC) {
-			if (hns3vf_enable_msix(pci_dev, true))
+			ret = hns3vf_enable_msix(pci_dev, true);
+			if (ret != 0) {
 				hns3_err(hw, "Failed to enable msix");
+				return ret;
+			}
 		}
 
 		rte_intr_enable(pci_dev->intr_handle);

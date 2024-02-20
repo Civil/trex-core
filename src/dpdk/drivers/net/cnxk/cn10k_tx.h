@@ -35,16 +35,58 @@
 
 #define NIX_XMIT_FC_OR_RETURN(txq, pkts)                                       \
 	do {                                                                   \
+		int64_t avail;                                                 \
 		/* Cached value is low, Update the fc_cache_pkts */            \
 		if (unlikely((txq)->fc_cache_pkts < (pkts))) {                 \
+			avail = txq->nb_sqb_bufs_adj - *txq->fc_mem;           \
 			/* Multiply with sqe_per_sqb to express in pkts */     \
 			(txq)->fc_cache_pkts =                                 \
-				((txq)->nb_sqb_bufs_adj - *(txq)->fc_mem)      \
-				<< (txq)->sqes_per_sqb_log2;                   \
+				(avail << (txq)->sqes_per_sqb_log2) - avail;   \
 			/* Check it again for the room */                      \
 			if (unlikely((txq)->fc_cache_pkts < (pkts)))           \
 				return 0;                                      \
 		}                                                              \
+	} while (0)
+
+#define NIX_XMIT_FC_OR_RETURN_MTS(txq, pkts)                                                       \
+	do {                                                                                       \
+		int64_t *fc_cache = &(txq)->fc_cache_pkts;                                         \
+		uint8_t retry_count = 8;                                                           \
+		int64_t val, newval;                                                               \
+	retry:                                                                                     \
+		/* Reduce the cached count */                                                      \
+		val = (int64_t)__atomic_fetch_sub(fc_cache, pkts, __ATOMIC_RELAXED);               \
+		val -= pkts;                                                                       \
+		/* Cached value is low, Update the fc_cache_pkts */                                \
+		if (unlikely(val < 0)) {                                                           \
+			/* Multiply with sqe_per_sqb to express in pkts */                         \
+			newval = txq->nb_sqb_bufs_adj - __atomic_load_n(txq->fc_mem,               \
+									__ATOMIC_RELAXED);         \
+			newval = (newval << (txq)->sqes_per_sqb_log2) - newval;                    \
+			newval -= pkts;                                                            \
+			if (!__atomic_compare_exchange_n(fc_cache, &val, newval, false,            \
+							 __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {    \
+				if (retry_count) {                                                 \
+					retry_count--;                                             \
+					goto retry;                                                \
+				} else                                                             \
+					return 0;                                                  \
+			}                                                                          \
+			/* Update and check it again for the room */                               \
+			if (unlikely(newval < 0))                                                  \
+				return 0;                                                          \
+		}                                                                                  \
+	} while (0)
+
+#define NIX_XMIT_FC_CHECK_RETURN(txq, pkts)                                                        \
+	do {                                                                                       \
+		if (unlikely((txq)->flag))                                                         \
+			NIX_XMIT_FC_OR_RETURN_MTS(txq, pkts);                                      \
+		else {                                                                             \
+			NIX_XMIT_FC_OR_RETURN(txq, pkts);                                          \
+			/* Reduce the cached count */                                              \
+			txq->fc_cache_pkts -= pkts;                                                \
+		}                                                                                  \
 	} while (0)
 
 /* Encoded number of segments to number of dwords macro, each value of nb_segs
@@ -101,28 +143,72 @@ cn10k_nix_tx_mbuf_validate(struct rte_mbuf *m, const uint32_t flags)
 }
 
 static __plt_always_inline void
-cn10k_nix_vwqe_wait_fc(struct cn10k_eth_txq *txq, int64_t req)
+cn10k_nix_vwqe_wait_fc(struct cn10k_eth_txq *txq, uint16_t req)
 {
 	int64_t cached, refill;
+	int64_t pkts;
 
 retry:
+#ifdef RTE_ARCH_ARM64
+
+	asm volatile(PLT_CPU_FEATURE_PREAMBLE
+		     "		ldxr %[pkts], [%[addr]]			\n"
+		     "		tbz %[pkts], 63, .Ldne%=		\n"
+		     "		sevl					\n"
+		     ".Lrty%=:	wfe					\n"
+		     "		ldxr %[pkts], [%[addr]]			\n"
+		     "		tbnz %[pkts], 63, .Lrty%=		\n"
+		     ".Ldne%=:						\n"
+		     : [pkts] "=&r"(pkts)
+		     : [addr] "r"(&txq->fc_cache_pkts)
+		     : "memory");
+#else
+	RTE_SET_USED(pkts);
 	while (__atomic_load_n(&txq->fc_cache_pkts, __ATOMIC_RELAXED) < 0)
 		;
-	cached = __atomic_sub_fetch(&txq->fc_cache_pkts, req, __ATOMIC_ACQUIRE);
+#endif
+	cached = __atomic_fetch_sub(&txq->fc_cache_pkts, req, __ATOMIC_ACQUIRE) - req;
 	/* Check if there is enough space, else update and retry. */
-	if (cached < 0) {
-		/* Check if we have space else retry. */
-		do {
-			refill =
-				(txq->nb_sqb_bufs_adj -
-				 __atomic_load_n(txq->fc_mem, __ATOMIC_RELAXED))
-				<< txq->sqes_per_sqb_log2;
-		} while (refill <= 0);
-		__atomic_compare_exchange(&txq->fc_cache_pkts, &cached, &refill,
-					  0, __ATOMIC_RELEASE,
-					  __ATOMIC_RELAXED);
+	if (cached >= 0)
+		return;
+
+	/* Check if we have space else retry. */
+#ifdef RTE_ARCH_ARM64
+	int64_t val;
+
+	asm volatile(PLT_CPU_FEATURE_PREAMBLE
+		     "		ldxr %[val], [%[addr]]			\n"
+		     "		sub %[val], %[adj], %[val]		\n"
+		     "		lsl %[refill], %[val], %[shft]		\n"
+		     "		sub %[refill], %[refill], %[val]	\n"
+		     "		sub %[refill], %[refill], %[sub]	\n"
+		     "		cmp %[refill], #0x0			\n"
+		     "		b.ge .Ldne%=				\n"
+		     "		sevl					\n"
+		     ".Lrty%=:	wfe					\n"
+		     "		ldxr %[val], [%[addr]]			\n"
+		     "		sub %[val], %[adj], %[val]		\n"
+		     "		lsl %[refill], %[val], %[shft]		\n"
+		     "		sub %[refill], %[refill], %[val]	\n"
+		     "		sub %[refill], %[refill], %[sub]	\n"
+		     "		cmp %[refill], #0x0			\n"
+		     "		b.lt .Lrty%=				\n"
+		     ".Ldne%=:						\n"
+		     : [refill] "=&r"(refill), [val] "=&r" (val)
+		     : [addr] "r"(txq->fc_mem), [adj] "r"(txq->nb_sqb_bufs_adj),
+		       [shft] "r"(txq->sqes_per_sqb_log2), [sub] "r"(req)
+		     : "memory");
+#else
+	do {
+		refill = (txq->nb_sqb_bufs_adj - __atomic_load_n(txq->fc_mem, __ATOMIC_RELAXED));
+		refill = (refill << txq->sqes_per_sqb_log2) - refill;
+		refill -= req;
+	} while (refill < 0);
+#endif
+	if (!__atomic_compare_exchange(&txq->fc_cache_pkts, &cached, &refill,
+				  0, __ATOMIC_RELEASE,
+				  __ATOMIC_RELAXED))
 		goto retry;
-	}
 }
 
 /* Function to determine no of tx subdesc required in case ext
@@ -283,10 +369,27 @@ static __rte_always_inline void
 cn10k_nix_sec_fc_wait_one(struct cn10k_eth_txq *txq)
 {
 	uint64_t nb_desc = txq->cpt_desc;
-	uint64_t *fc = txq->cpt_fc;
+	uint64_t fc;
 
-	while (nb_desc <= __atomic_load_n(fc, __ATOMIC_RELAXED))
+#ifdef RTE_ARCH_ARM64
+	asm volatile(PLT_CPU_FEATURE_PREAMBLE
+		     "		ldxr %[space], [%[addr]]		\n"
+		     "		cmp %[nb_desc], %[space]		\n"
+		     "		b.hi .Ldne%=				\n"
+		     "		sevl					\n"
+		     ".Lrty%=:	wfe					\n"
+		     "		ldxr %[space], [%[addr]]		\n"
+		     "		cmp %[nb_desc], %[space]		\n"
+		     "		b.ls .Lrty%=				\n"
+		     ".Ldne%=:						\n"
+		     : [space] "=&r"(fc)
+		     : [nb_desc] "r"(nb_desc), [addr] "r"(txq->cpt_fc)
+		     : "memory");
+#else
+	RTE_SET_USED(fc);
+	while (nb_desc <= __atomic_load_n(txq->cpt_fc, __ATOMIC_RELAXED))
 		;
+#endif
 }
 
 static __rte_always_inline void
@@ -294,7 +397,7 @@ cn10k_nix_sec_fc_wait(struct cn10k_eth_txq *txq, uint16_t nb_pkts)
 {
 	int32_t nb_desc, val, newval;
 	int32_t *fc_sw;
-	volatile uint64_t *fc;
+	uint64_t *fc;
 
 	/* Check if there is any CPT instruction to submit */
 	if (!nb_pkts)
@@ -302,21 +405,59 @@ cn10k_nix_sec_fc_wait(struct cn10k_eth_txq *txq, uint16_t nb_pkts)
 
 again:
 	fc_sw = txq->cpt_fc_sw;
-	val = __atomic_sub_fetch(fc_sw, nb_pkts, __ATOMIC_RELAXED);
+#ifdef RTE_ARCH_ARM64
+	asm volatile(PLT_CPU_FEATURE_PREAMBLE
+		     "		ldxr %w[pkts], [%[addr]]		\n"
+		     "		tbz %w[pkts], 31, .Ldne%=		\n"
+		     "		sevl					\n"
+		     ".Lrty%=:	wfe					\n"
+		     "		ldxr %w[pkts], [%[addr]]		\n"
+		     "		tbnz %w[pkts], 31, .Lrty%=		\n"
+		     ".Ldne%=:						\n"
+		     : [pkts] "=&r"(val)
+		     : [addr] "r"(fc_sw)
+		     : "memory");
+#else
+	/* Wait for primary core to refill FC. */
+	while (__atomic_load_n(fc_sw, __ATOMIC_RELAXED) < 0)
+		;
+#endif
+
+	val = __atomic_fetch_sub(fc_sw, nb_pkts, __ATOMIC_ACQUIRE) - nb_pkts;
 	if (likely(val >= 0))
 		return;
 
 	nb_desc = txq->cpt_desc;
 	fc = txq->cpt_fc;
+#ifdef RTE_ARCH_ARM64
+	asm volatile(PLT_CPU_FEATURE_PREAMBLE
+		     "		ldxr %[refill], [%[addr]]		\n"
+		     "		sub %[refill], %[desc], %[refill]	\n"
+		     "		sub %[refill], %[refill], %[pkts]	\n"
+		     "		cmp %[refill], #0x0			\n"
+		     "		b.ge .Ldne%=				\n"
+		     "		sevl					\n"
+		     ".Lrty%=:	wfe					\n"
+		     "		ldxr %[refill], [%[addr]]		\n"
+		     "		sub %[refill], %[desc], %[refill]	\n"
+		     "		sub %[refill], %[refill], %[pkts]	\n"
+		     "		cmp %[refill], #0x0			\n"
+		     "		b.lt .Lrty%=				\n"
+		     ".Ldne%=:						\n"
+		     : [refill] "=&r"(newval)
+		     : [addr] "r"(fc), [desc] "r"(nb_desc), [pkts] "r"(nb_pkts)
+		     : "memory");
+#else
 	while (true) {
 		newval = nb_desc - __atomic_load_n(fc, __ATOMIC_RELAXED);
 		newval -= nb_pkts;
 		if (newval >= 0)
 			break;
 	}
+#endif
 
-	if (!__atomic_compare_exchange_n(fc_sw, &val, newval, false,
-					 __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+	if (!__atomic_compare_exchange_n(fc_sw, &val, newval, false, __ATOMIC_RELEASE,
+					 __ATOMIC_RELAXED))
 		goto again;
 }
 
@@ -343,7 +484,7 @@ cn10k_nix_sec_steorl(uintptr_t io_addr, uint32_t lmt_id, uint8_t lnum,
 	data &= ~(0x7ULL << 16);
 	/* Update lines - 1 that contain valid data */
 	data |= ((uint64_t)(lnum + loff - 1)) << 12;
-	data |= lmt_id;
+	data |= (uint64_t)lmt_id;
 
 	/* STEOR */
 	roc_lmt_submit_steorl(data, pa);
@@ -436,7 +577,7 @@ cn10k_nix_prep_sec_vec(struct rte_mbuf *m, uint64x2_t *cmd0, uint64x2_t *cmd1,
 		nixtx = (nixtx - 1) & ~(BIT_ULL(7) - 1);
 		nixtx += 16;
 
-		w0 |= cn10k_nix_tx_ext_subs(flags) + 1;
+		w0 |= cn10k_nix_tx_ext_subs(flags) + 1ULL;
 		dptr += l2_len;
 		ucode_cmd[1] = dptr;
 		*cmd1 = vsetq_lane_u16(pkt_len + dlen_adj, *cmd1, 0);
@@ -577,7 +718,7 @@ cn10k_nix_prep_sec(struct rte_mbuf *m, uint64_t *cmd, uintptr_t *nixtx_addr,
 		nixtx = (nixtx - 1) & ~(BIT_ULL(7) - 1);
 		nixtx += 16;
 
-		w0 |= cn10k_nix_tx_ext_subs(flags) + 1;
+		w0 |= cn10k_nix_tx_ext_subs(flags) + 1ULL;
 		dptr += l2_len;
 		ucode_cmd[1] = dptr;
 		sg->seg1_size = pkt_len + dlen_adj;
@@ -870,7 +1011,8 @@ cn10k_nix_xmit_prepare(struct cn10k_eth_txq *txq,
 		send_hdr_ext->w0.markptr = markptr;
 	}
 
-	if (flags & NIX_TX_OFFLOAD_TSO_F && (ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
+	if (flags & NIX_TX_NEED_EXT_HDR && flags & NIX_TX_OFFLOAD_TSO_F &&
+	    (ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
 		uint16_t lso_sb;
 		uint64_t mask;
 
@@ -1151,83 +1293,6 @@ done:
 	return segdw;
 }
 
-static inline uint16_t
-nix_tx_compl_nb_pkts(struct cn10k_eth_txq *txq, const uint64_t wdata,
-		const uint16_t pkts, const uint32_t qmask)
-{
-	uint32_t available = txq->tx_compl.available;
-
-	/* Update the available count if cached value is not enough */
-	if (unlikely(available < pkts)) {
-		uint64_t reg, head, tail;
-
-		/* Use LDADDA version to avoid reorder */
-		reg = roc_atomic64_add_sync(wdata, txq->tx_compl.cq_status);
-		/* CQ_OP_STATUS operation error */
-		if (reg & BIT_ULL(NIX_CQ_OP_STAT_OP_ERR) ||
-				reg & BIT_ULL(NIX_CQ_OP_STAT_CQ_ERR))
-			return 0;
-
-		tail = reg & 0xFFFFF;
-		head = (reg >> 20) & 0xFFFFF;
-		if (tail < head)
-			available = tail - head + qmask + 1;
-		else
-			available = tail - head;
-
-		txq->tx_compl.available = available;
-	}
-	return RTE_MIN(pkts, available);
-}
-
-static inline void
-handle_tx_completion_pkts(struct cn10k_eth_txq *txq, const uint16_t pkts,
-			  uint8_t mt_safe)
-{
-#define CNXK_NIX_CQ_ENTRY_SZ 128
-#define CQE_SZ(x)            ((x) * CNXK_NIX_CQ_ENTRY_SZ)
-
-	uint16_t tx_pkts = 0, nb_pkts;
-	const uintptr_t desc = txq->tx_compl.desc_base;
-	const uint64_t wdata = txq->tx_compl.wdata;
-	const uint32_t qmask = txq->tx_compl.qmask;
-	uint32_t head = txq->tx_compl.head;
-	struct nix_cqe_hdr_s *tx_compl_cq;
-	struct nix_send_comp_s *tx_compl_s0;
-	struct rte_mbuf *m_next, *m;
-
-	if (mt_safe)
-		rte_spinlock_lock(&txq->tx_compl.ext_buf_lock);
-
-	nb_pkts = nix_tx_compl_nb_pkts(txq, wdata, pkts, qmask);
-	while (tx_pkts < nb_pkts) {
-		rte_prefetch_non_temporal((void *)(desc +
-					(CQE_SZ((head + 2) & qmask))));
-		tx_compl_cq = (struct nix_cqe_hdr_s *)
-			(desc + CQE_SZ(head));
-		tx_compl_s0 = (struct nix_send_comp_s *)
-			((uint64_t *)tx_compl_cq + 1);
-		m = txq->tx_compl.ptr[tx_compl_s0->sqe_id];
-		while (m->next != NULL) {
-			m_next = m->next;
-			rte_pktmbuf_free_seg(m);
-			m = m_next;
-		}
-		rte_pktmbuf_free_seg(m);
-
-		head++;
-		head &= qmask;
-		tx_pkts++;
-	}
-	txq->tx_compl.head = head;
-	txq->tx_compl.available -= nb_pkts;
-
-	plt_write64((wdata | nb_pkts), txq->tx_compl.cq_door);
-
-	if (mt_safe)
-		rte_spinlock_unlock(&txq->tx_compl.ext_buf_lock);
-}
-
 static __rte_always_inline uint16_t
 cn10k_nix_xmit_pkts(void *tx_queue, uint64_t *ws, struct rte_mbuf **tx_pkts,
 		    uint16_t pkts, uint64_t *cmd, const uint16_t flags)
@@ -1249,13 +1314,11 @@ cn10k_nix_xmit_pkts(void *tx_queue, uint64_t *ws, struct rte_mbuf **tx_pkts,
 	bool sec;
 
 	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && txq->tx_compl.ena)
-		handle_tx_completion_pkts(txq, pkts, flags & NIX_TX_VWQE_F);
+		handle_tx_completion_pkts(txq, flags & NIX_TX_VWQE_F);
 
-	if (!(flags & NIX_TX_VWQE_F)) {
-		NIX_XMIT_FC_OR_RETURN(txq, pkts);
-		/* Reduce the cached count */
-		txq->fc_cache_pkts -= pkts;
-	}
+	if (!(flags & NIX_TX_VWQE_F))
+		NIX_XMIT_FC_CHECK_RETURN(txq, pkts);
+
 	/* Get cmd skeleton */
 	cn10k_nix_tx_skeleton(txq, cmd, flags, !(flags & NIX_TX_VWQE_F));
 
@@ -1312,8 +1375,8 @@ again:
 			lnum++;
 	}
 
-	if ((flags & NIX_TX_VWQE_F) && !(ws[1] & BIT_ULL(35)))
-		ws[1] = roc_sso_hws_head_wait(ws[0]);
+	if ((flags & NIX_TX_VWQE_F) && !(ws[3] & BIT_ULL(35)))
+		ws[3] = roc_sso_hws_head_wait(ws[0]);
 
 	left -= burst;
 	tx_pkts += burst;
@@ -1359,7 +1422,7 @@ again:
 		pa = io_addr | (data & 0x7) << 4;
 		data &= ~0x7ULL;
 		data |= ((uint64_t)(burst - 1)) << 12;
-		data |= lmt_id;
+		data |= (uint64_t)lmt_id;
 
 		if (flags & NIX_TX_VWQE_F)
 			cn10k_nix_vwqe_wait_fc(txq, burst);
@@ -1398,13 +1461,11 @@ cn10k_nix_xmit_pkts_mseg(void *tx_queue, uint64_t *ws,
 	bool sec;
 
 	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && txq->tx_compl.ena)
-		handle_tx_completion_pkts(txq, pkts, flags & NIX_TX_VWQE_F);
+		handle_tx_completion_pkts(txq, flags & NIX_TX_VWQE_F);
 
-	if (!(flags & NIX_TX_VWQE_F)) {
-		NIX_XMIT_FC_OR_RETURN(txq, pkts);
-		/* Reduce the cached count */
-		txq->fc_cache_pkts -= pkts;
-	}
+	if (!(flags & NIX_TX_VWQE_F))
+		NIX_XMIT_FC_CHECK_RETURN(txq, pkts);
+
 	/* Get cmd skeleton */
 	cn10k_nix_tx_skeleton(txq, cmd, flags, !(flags & NIX_TX_VWQE_F));
 
@@ -1471,8 +1532,8 @@ again:
 		}
 	}
 
-	if ((flags & NIX_TX_VWQE_F) && !(ws[1] & BIT_ULL(35)))
-		ws[1] = roc_sso_hws_head_wait(ws[0]);
+	if ((flags & NIX_TX_VWQE_F) && !(ws[3] & BIT_ULL(35)))
+		ws[3] = roc_sso_hws_head_wait(ws[0]);
 
 	left -= burst;
 	tx_pkts += burst;
@@ -1523,7 +1584,7 @@ again:
 		data0 &= ~0x7ULL;
 		/* Move lmtst1..15 sz to bits 63:19 */
 		data0 <<= 16;
-		data0 |= ((burst - 1) << 12);
+		data0 |= ((burst - 1ULL) << 12);
 		data0 |= (uint64_t)lmt_id;
 
 		if (flags & NIX_TX_VWQE_F)
@@ -1906,10 +1967,12 @@ cn10k_nix_xmit_store(struct cn10k_eth_txq *txq,
 			vst1q_u64(LMT_OFF(laddr, 0, 16), cmd2);
 			vst1q_u64(LMT_OFF(laddr, 0, 32), cmd1);
 		}
+		RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf, 1, 0);
 	} else {
 		/* Store the prepared send desc to LMT lines */
 		vst1q_u64(LMT_OFF(laddr, 0, 0), cmd0);
 		vst1q_u64(LMT_OFF(laddr, 0, 16), cmd1);
+		RTE_MEMPOOL_CHECK_COOKIES(mbuf->pool, (void **)&mbuf, 1, 0);
 	}
 }
 
@@ -1937,6 +2000,7 @@ cn10k_nix_xmit_pkts_vector(void *tx_queue, uint64_t *ws,
 	uint64x2_t xmask01_w0, xmask23_w0;
 	uint64x2_t xmask01_w1, xmask23_w1;
 	rte_iova_t io_addr = txq->io_addr;
+	uint8_t lnum, shift = 0, loff = 0;
 	uintptr_t laddr = txq->lmt_base;
 	uint8_t c_lnum, c_shft, c_loff;
 	struct nix_send_hdr_s send_hdr;
@@ -1944,7 +2008,6 @@ cn10k_nix_xmit_pkts_vector(void *tx_queue, uint64_t *ws,
 	uint64x2_t xtmp128, ytmp128;
 	uint64x2_t xmask01, xmask23;
 	uintptr_t c_laddr = laddr;
-	uint8_t lnum, shift, loff = 0;
 	rte_iova_t c_io_addr;
 	uint64_t sa_base;
 	union wdata {
@@ -1953,14 +2016,12 @@ cn10k_nix_xmit_pkts_vector(void *tx_queue, uint64_t *ws,
 	} wd;
 
 	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F && txq->tx_compl.ena)
-		handle_tx_completion_pkts(txq, pkts, flags & NIX_TX_VWQE_F);
+		handle_tx_completion_pkts(txq, flags & NIX_TX_VWQE_F);
 
 	if (!(flags & NIX_TX_VWQE_F)) {
-		NIX_XMIT_FC_OR_RETURN(txq, pkts);
 		scalar = pkts & (NIX_DESCS_PER_LOOP - 1);
 		pkts = RTE_ALIGN_FLOOR(pkts, NIX_DESCS_PER_LOOP);
-		/* Reduce the cached count */
-		txq->fc_cache_pkts -= pkts;
+		NIX_XMIT_FC_CHECK_RETURN(txq, pkts);
 	} else {
 		scalar = pkts & (NIX_DESCS_PER_LOOP - 1);
 		pkts = RTE_ALIGN_FLOOR(pkts, NIX_DESCS_PER_LOOP);
@@ -2140,13 +2201,13 @@ again:
 			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf0), 1);
 		len_olflags0 = vld1q_u64(mbuf0 + 3);
 		dataoff_iova1 =
-			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf1), 1);
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf1)->data_off, vld1q_u64(mbuf1), 1);
 		len_olflags1 = vld1q_u64(mbuf1 + 3);
 		dataoff_iova2 =
-			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf2), 1);
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf2)->data_off, vld1q_u64(mbuf2), 1);
 		len_olflags2 = vld1q_u64(mbuf2 + 3);
 		dataoff_iova3 =
-			vsetq_lane_u64(((struct rte_mbuf *)mbuf0)->data_off, vld1q_u64(mbuf3), 1);
+			vsetq_lane_u64(((struct rte_mbuf *)mbuf3)->data_off, vld1q_u64(mbuf3), 1);
 		len_olflags3 = vld1q_u64(mbuf3 + 3);
 
 		/* Move mbufs to point pool */
@@ -3062,8 +3123,8 @@ again:
 	if (flags & (NIX_TX_MULTI_SEG_F | NIX_TX_OFFLOAD_SECURITY_F))
 		wd.data[0] >>= 16;
 
-	if ((flags & NIX_TX_VWQE_F) && !(ws[1] & BIT_ULL(35)))
-		ws[1] = roc_sso_hws_head_wait(ws[0]);
+	if ((flags & NIX_TX_VWQE_F) && !(ws[3] & BIT_ULL(35)))
+		ws[3] = roc_sso_hws_head_wait(ws[0]);
 
 	left -= burst;
 
@@ -3110,10 +3171,16 @@ again:
 		wd.data[1] |= ((uint64_t)(lnum - 17)) << 12;
 		wd.data[1] |= (uint64_t)(lmt_id + 16);
 
-		if (flags & NIX_TX_VWQE_F)
-			cn10k_nix_vwqe_wait_fc(txq,
-				burst - (cn10k_nix_pkts_per_vec_brst(flags) >>
-					 1));
+		if (flags & NIX_TX_VWQE_F) {
+			if (flags & NIX_TX_MULTI_SEG_F) {
+				if (burst - (cn10k_nix_pkts_per_vec_brst(flags) >> 1) > 0)
+					cn10k_nix_vwqe_wait_fc(txq,
+						burst - (cn10k_nix_pkts_per_vec_brst(flags) >> 1));
+			} else {
+				cn10k_nix_vwqe_wait_fc(txq,
+						burst - (cn10k_nix_pkts_per_vec_brst(flags) >> 1));
+			}
+		}
 		/* STEOR1 */
 		roc_lmt_submit_steorl(wd.data[1], pa);
 	} else if (lnum) {
@@ -3127,7 +3194,7 @@ again:
 			wd.data[0] <<= 16;
 
 		wd.data[0] |= ((uint64_t)(lnum - 1)) << 12;
-		wd.data[0] |= lmt_id;
+		wd.data[0] |= (uint64_t)lmt_id;
 
 		if (flags & NIX_TX_VWQE_F)
 			cn10k_nix_vwqe_wait_fc(txq, burst);

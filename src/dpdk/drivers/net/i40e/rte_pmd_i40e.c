@@ -1706,9 +1706,9 @@ rte_pmd_i40e_process_ddp_package(uint16_t port, uint8_t *buff,
 
 	if (op == RTE_PMD_I40E_PKG_OP_WR_ADD) {
 		if (is_exist) {
-			if (is_exist == 1){
-				//PMD_DRV_LOG(ERR, "Profile already exists.");
-			} else if (is_exist == 2)
+			if (is_exist == 1)
+				PMD_DRV_LOG(ERR, "Profile already exists.");
+			else if (is_exist == 2)
 				PMD_DRV_LOG(ERR, "Profile of group 0 already exists.");
 			else if (is_exist == 3)
 				PMD_DRV_LOG(ERR, "Profile of different group already exists");
@@ -3281,4 +3281,24 @@ rte_pmd_i40e_set_switch_dev(uint16_t port_id, struct rte_eth_dev *switch_dev)
 	hw->switch_dev = switch_dev;
 
 	return 0;
+}
+
+int
+rte_pmd_i40e_set_pf_src_prune(uint16_t port, uint8_t on)
+{
+	struct rte_eth_dev *dev;
+	struct i40e_pf *pf;
+	int ret;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+
+	ret = i40e_pf_set_source_prune(pf, on);
+	return ret;
 }

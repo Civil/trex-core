@@ -308,7 +308,9 @@ cnxk_nix_flow_ctrl_set(struct rte_eth_dev *eth_dev,
 		fc_cfg.rq_cfg.tc = 0;
 		fc_cfg.rq_cfg.rq = rq->qid;
 		fc_cfg.rq_cfg.pool = rq->aura_handle;
+		fc_cfg.rq_cfg.spb_pool = rq->spb_aura_handle;
 		fc_cfg.rq_cfg.cq_drop = cq->drop_thresh;
+		fc_cfg.rq_cfg.pool_drop_pct = ROC_NIX_AURA_THRESH;
 
 		rc = roc_nix_fc_config_set(nix, &fc_cfg);
 		if (rc)
@@ -341,6 +343,10 @@ cnxk_nix_flow_ctrl_set(struct rte_eth_dev *eth_dev,
 		if (rc && rc != EEXIST)
 			return rc;
 	}
+
+	/* Skip mode set if it is we are in same state */
+	if (fc->rx_pause == rx_pause && fc->tx_pause == tx_pause)
+		return 0;
 
 	rc = roc_nix_fc_mode_set(nix, mode_map[fc_conf->mode]);
 	if (rc)
@@ -468,6 +474,8 @@ cnxk_nix_mac_addr_add(struct rte_eth_dev *eth_dev, struct rte_ether_addr *addr,
 		return rc;
 	}
 
+	dev->dmac_idx_map[index] = rc;
+
 	/* Enable promiscuous mode at NIX level */
 	roc_nix_npc_promisc_ena_dis(nix, true);
 	dev->dmac_filter_enable = true;
@@ -484,11 +492,49 @@ cnxk_nix_mac_addr_del(struct rte_eth_dev *eth_dev, uint32_t index)
 	struct roc_nix *nix = &dev->nix;
 	int rc;
 
-	rc = roc_nix_mac_addr_del(nix, index);
+	rc = roc_nix_mac_addr_del(nix, dev->dmac_idx_map[index]);
 	if (rc)
 		plt_err("Failed to delete mac address, rc=%d", rc);
 
 	dev->dmac_filter_count--;
+}
+
+int
+cnxk_nix_sq_flush(struct rte_eth_dev *eth_dev)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct rte_eth_dev_data *data = eth_dev->data;
+	int i, rc = 0;
+
+	/* Flush all tx queues */
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+		struct roc_nix_sq *sq = &dev->sqs[i];
+
+		if (eth_dev->data->tx_queues[i] == NULL)
+			continue;
+
+		rc = roc_nix_tm_sq_aura_fc(sq, false);
+		if (rc) {
+			plt_err("Failed to disable sqb aura fc, rc=%d", rc);
+			goto exit;
+		}
+
+		/* Wait for sq entries to be flushed */
+		rc = roc_nix_tm_sq_flush_spin(sq);
+		if (rc) {
+			plt_err("Failed to drain sq, rc=%d\n", rc);
+			goto exit;
+		}
+		if (data->tx_queue_state[i] == RTE_ETH_QUEUE_STATE_STARTED) {
+			rc = roc_nix_tm_sq_aura_fc(sq, true);
+			if (rc) {
+				plt_err("Failed to enable sq aura fc, txq=%u, rc=%d", i, rc);
+				goto exit;
+			}
+		}
+	}
+exit:
+	return rc;
 }
 
 int
@@ -532,6 +578,15 @@ cnxk_nix_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	    frame_size > (buffsz * CNXK_NIX_RX_NB_SEG_MAX)) {
 		plt_err("Greater than maximum supported packet length");
 		goto exit;
+	}
+
+	/* if new MTU was smaller than old one, then flush all SQs before MTU change */
+	if (old_frame_size > frame_size) {
+		if (data->dev_started) {
+			plt_err("Reducing MTU is not supported when device started");
+			goto exit;
+		}
+		cnxk_nix_sq_flush(eth_dev);
 	}
 
 	frame_size -= RTE_ETHER_CRC_LEN;
@@ -1147,7 +1202,9 @@ nix_priority_flow_ctrl_rq_conf(struct rte_eth_dev *eth_dev, uint16_t qid,
 	fc_cfg.rq_cfg.enable = !!tx_pause;
 	fc_cfg.rq_cfg.rq = rq->qid;
 	fc_cfg.rq_cfg.pool = rxq->qconf.mp->pool_id;
+	fc_cfg.rq_cfg.spb_pool = rq->spb_aura_handle;
 	fc_cfg.rq_cfg.cq_drop = cq->drop_thresh;
+	fc_cfg.rq_cfg.pool_drop_pct = ROC_NIX_AURA_THRESH;
 	rc = roc_nix_fc_config_set(nix, &fc_cfg);
 	if (rc)
 		return rc;

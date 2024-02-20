@@ -17,6 +17,7 @@
 #define ROC_SE_MAJOR_OP_PDCP	   0x37
 #define ROC_SE_MAJOR_OP_KASUMI	   0x38
 #define ROC_SE_MAJOR_OP_PDCP_CHAIN 0x3C
+#define ROC_SE_MAJOR_OP_SM	   0x3D
 
 #define ROC_SE_MAJOR_OP_MISC		 0x01ULL
 #define ROC_SE_MISC_MINOR_OP_PASSTHROUGH 0x03ULL
@@ -28,6 +29,8 @@
 
 #define ROC_SE_OFF_CTRL_LEN 8
 
+#define ROC_SE_SM4_KEY_LEN 16
+
 #define ROC_SE_ZS_EA 0x1
 #define ROC_SE_ZS_IA 0x2
 #define ROC_SE_K_F8  0x4
@@ -38,6 +41,7 @@
 #define ROC_SE_KASUMI	  0x3
 #define ROC_SE_HASH_HMAC  0x4
 #define ROC_SE_PDCP_CHAIN 0x5
+#define ROC_SE_SM	  0x6
 
 #define ROC_SE_OP_CIPHER_ENCRYPT 0x1
 #define ROC_SE_OP_CIPHER_DECRYPT 0x2
@@ -81,6 +85,7 @@ typedef enum {
 	ROC_SE_SHA2_SHA512 = 6,
 	ROC_SE_GMAC_TYPE = 7,
 	ROC_SE_POLY1305 = 8,
+	ROC_SE_SM3 = 9,
 	ROC_SE_SHA3_SHA224 = 10,
 	ROC_SE_SHA3_SHA256 = 11,
 	ROC_SE_SHA3_SHA384 = 12,
@@ -112,6 +117,7 @@ typedef enum {
 	ROC_SE_AES_GCM = 0x7,
 	ROC_SE_AES_XTS = 0x8,
 	ROC_SE_CHACHA20 = 0x9,
+	ROC_SE_AES_CCM = 0xA,
 
 	/* These are only for software use */
 	ROC_SE_ZUC_EEA3 = 0x90,
@@ -122,6 +128,14 @@ typedef enum {
 	ROC_SE_AES_DOCSISBPI = 0x95,
 	ROC_SE_DES_DOCSISBPI = 0x96,
 } roc_se_cipher_type;
+
+typedef enum {
+	ROC_SM4_ECB = 0x0,
+	ROC_SM4_CBC = 0x1,
+	ROC_SM4_CTR = 0x2,
+	ROC_SM4_CFB = 0x3,
+	ROC_SM4_OFB = 0x4,
+} roc_sm_cipher_type;
 
 typedef enum {
 	/* Microcode errors */
@@ -169,13 +183,15 @@ typedef enum {
 struct roc_se_enc_context {
 	uint64_t iv_source : 1;
 	uint64_t aes_key : 2;
-	uint64_t rsvd_60 : 1;
+	uint64_t rsvd_59 : 1;
 	uint64_t enc_cipher : 4;
 	uint64_t auth_input_type : 1;
-	uint64_t rsvd_52_54 : 3;
+	uint64_t auth_key_src : 1;
+	uint64_t rsvd_50_51 : 2;
 	uint64_t hash_type : 4;
 	uint64_t mac_len : 8;
-	uint64_t rsvd_39_0 : 40;
+	uint64_t rsvd_16_39 : 24;
+	uint64_t hmac_key_sz : 16;
 	uint8_t encr_key[32];
 	uint8_t encr_iv[16];
 };
@@ -188,6 +204,13 @@ struct roc_se_hmac_context {
 struct roc_se_context {
 	struct roc_se_enc_context enc;
 	struct roc_se_hmac_context hmac;
+};
+
+struct roc_se_sm_context {
+	uint64_t rsvd_56_60 : 5;
+	uint64_t enc_cipher : 3;
+	uint64_t rsvd_0_55 : 56;
+	uint8_t encr_key[16];
 };
 
 struct roc_se_otk_zuc_ctx {
@@ -230,14 +253,16 @@ struct roc_se_onk_zuc_chain_ctx {
 	} w0;
 	union {
 		struct {
-			uint8_t encr_lfsr_state[64];
-			uint8_t auth_lfsr_state[64];
+			uint8_t encr_lfsr_state[72];
+			uint8_t auth_lfsr_state[72];
 		};
 		struct {
 			uint8_t ci_key[32];
 			uint8_t ci_zuc_const[32];
+			uint8_t rsvd[8];
 			uint8_t auth_key[32];
 			uint8_t auth_zuc_const[32];
+			uint8_t rsvd1[8];
 		};
 	} st;
 };
@@ -297,6 +322,9 @@ struct roc_se_ctx {
 	uint64_t pdcp_auth_alg : 2;
 	uint64_t ciph_then_auth : 1;
 	uint64_t auth_then_ciph : 1;
+	uint64_t eia2 : 1;
+	/* auth_iv_offset passed to PDCP_CHAIN opcode based on FVC bit */
+	uint8_t pdcp_iv_offset;
 	union cpt_inst_w4 template_w4;
 	/* Below fields are accessed by hardware */
 	struct se_ctx_s {
@@ -320,6 +348,7 @@ struct roc_se_ctx {
 			struct roc_se_zuc_snow3g_ctx zs_ctx;
 			struct roc_se_zuc_snow3g_chain_ctx zs_ch_ctx;
 			struct roc_se_kasumi_ctx k_ctx;
+			struct roc_se_sm_context sm_ctx;
 		};
 	} se_ctx __plt_aligned(ROC_ALIGN);
 	uint8_t *auth_key;
@@ -333,12 +362,13 @@ struct roc_se_fc_params {
 			struct roc_se_iov_ptr *dst_iov;
 		};
 	};
-	void *iv_buf;
-	void *auth_iv_buf;
+	const void *iv_buf;
+	const void *auth_iv_buf;
 	struct roc_se_ctx *ctx;
 	struct roc_se_buf_ptr meta_buf;
 	uint8_t cipher_iv_len;
 	uint8_t auth_iv_len;
+	uint8_t pdcp_iv_offset;
 
 	struct roc_se_buf_ptr aad_buf;
 	struct roc_se_buf_ptr mac_buf;

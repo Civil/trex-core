@@ -41,13 +41,13 @@ mem_free(void *addr, const bool trace_ena)
 void
 rte_free(void *addr)
 {
-	return mem_free(addr, true);
+	mem_free(addr, true);
 }
 
 void
 eal_free_no_trace(void *addr)
 {
-	return mem_free(addr, false);
+	mem_free(addr, false);
 }
 
 static void *
@@ -657,10 +657,7 @@ rte_malloc_heap_destroy(const char *heap_name)
 	/* sanity checks done, now we can destroy the heap */
 	rte_spinlock_lock(&heap->lock);
 	ret = malloc_heap_destroy(heap);
-
-	/* if we failed, lock is still active */
-	if (ret < 0)
-		rte_spinlock_unlock(&heap->lock);
+	rte_spinlock_unlock(&heap->lock);
 unlock:
 	rte_mcfg_mem_write_unlock();
 

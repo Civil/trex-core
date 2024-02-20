@@ -18,7 +18,6 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
@@ -2790,11 +2789,7 @@ step_next:
 
 	if (fdir_conf->mode == RTE_FDIR_MODE_NONE) {
 		fdir_conf->mode = rule->mode;
-#ifdef TREX_PATCH
-		ret = trex_ixgbe_fdir_configure(dev);
-#else
 		ret = ixgbe_fdir_configure(dev);
-#endif
 		if (ret) {
 			fdir_conf->mode = RTE_FDIR_MODE_NONE;
 			return ret;

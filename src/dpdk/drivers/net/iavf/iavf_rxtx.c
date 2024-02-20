@@ -30,9 +30,7 @@
 
 #include "iavf.h"
 #include "iavf_rxtx.h"
-#ifdef RTE_LIB_SECURITY
 #include "iavf_ipsec_crypto.h"
-#endif
 #include "rte_pmd_iavf.h"
 
 #define GRE_CHECKSUM_PRESENT	0x8000
@@ -699,6 +697,7 @@ iavf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 
 	len = rte_pktmbuf_data_room_size(rxq->mp) - RTE_PKTMBUF_HEADROOM;
 	rxq->rx_buf_len = RTE_ALIGN_FLOOR(len, (1 << IAVF_RXQ_CTX_DBUFF_SHIFT));
+	rxq->rx_buf_len = RTE_MIN(rxq->rx_buf_len, IAVF_RX_MAX_DATA_BUF_SIZE);
 
 	/* Allocate the software ring. */
 	len = nb_desc + IAVF_RX_MAX_BURST;
@@ -756,6 +755,13 @@ iavf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	if (check_rx_vec_allow(rxq) == false)
 		ad->rx_vec_allowed = false;
 
+#if defined RTE_ARCH_X86 || defined RTE_ARCH_ARM
+	/* check vector conflict */
+	if (ad->rx_vec_allowed && iavf_rxq_vec_setup(rxq)) {
+		PMD_DRV_LOG(ERR, "Failed vector rx setup.");
+		return -EINVAL;
+	}
+#endif
 	return 0;
 }
 
@@ -771,6 +777,7 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_info *vf =
 		IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	struct iavf_vsi *vsi = &vf->vsi;
 	struct iavf_tx_queue *txq;
 	const struct rte_memzone *mz;
 	uint32_t ring_size;
@@ -844,11 +851,12 @@ iavf_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->port_id = dev->data->port_id;
 	txq->offloads = offloads;
 	txq->tx_deferred_start = tx_conf->tx_deferred_start;
-#ifdef RTE_LIB_SECURITY
+	txq->vsi = vsi;
+
 	if (iavf_ipsec_crypto_supported(adapter))
 		txq->ipsec_crypto_pkt_md_offset =
 			iavf_security_get_pkt_md_offset(adapter);
-#endif
+
 	/* Allocate software ring */
 	txq->sw_ring =
 		rte_zmalloc_socket("iavf tx sw ring",
@@ -1095,29 +1103,12 @@ iavf_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 	rte_free(q);
 }
 
-void
-iavf_stop_queues(struct rte_eth_dev *dev)
+static void
+iavf_reset_queues(struct rte_eth_dev *dev)
 {
-	struct iavf_adapter *adapter =
-		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
-	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	struct iavf_rx_queue *rxq;
 	struct iavf_tx_queue *txq;
-	int ret, i;
-
-	/* Stop All queues */
-	if (!vf->lv_enabled) {
-		ret = iavf_disable_queues(adapter);
-		if (ret)
-			PMD_DRV_LOG(WARNING, "Fail to stop queues");
-	} else {
-		ret = iavf_disable_queues_lv(adapter);
-		if (ret)
-			PMD_DRV_LOG(WARNING, "Fail to stop queues for large VF");
-	}
-
-	if (ret)
-		PMD_DRV_LOG(WARNING, "Fail to stop queues");
+	int i;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		txq = dev->data->tx_queues[i];
@@ -1135,6 +1126,37 @@ iavf_stop_queues(struct rte_eth_dev *dev)
 		reset_rx_queue(rxq);
 		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
+}
+
+void
+iavf_stop_queues(struct rte_eth_dev *dev)
+{
+	struct iavf_adapter *adapter =
+		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	int ret;
+
+	/* adminq will be disabled when vf is resetting. */
+	if (vf->in_reset_recovery) {
+		iavf_reset_queues(dev);
+		return;
+	}
+
+	/* Stop All queues */
+	if (!vf->lv_enabled) {
+		ret = iavf_disable_queues(adapter);
+		if (ret)
+			PMD_DRV_LOG(WARNING, "Fail to stop queues");
+	} else {
+		ret = iavf_disable_queues_lv(adapter);
+		if (ret)
+			PMD_DRV_LOG(WARNING, "Fail to stop queues for large VF");
+	}
+
+	if (ret)
+		PMD_DRV_LOG(WARNING, "Fail to stop queues");
+
+	iavf_reset_queues(dev);
 }
 
 #define IAVF_RX_FLEX_ERR0_BITS	\
@@ -2426,7 +2448,7 @@ iavf_fill_ctx_desc_cmd_field(volatile uint64_t *field, struct rte_mbuf *m,
 
 	*field |= cmd;
 }
-#ifdef RTE_LIB_SECURITY
+
 static inline void
 iavf_fill_ctx_desc_ipsec_field(volatile uint64_t *field,
 	struct iavf_ipsec_crypto_pkt_metadata *ipsec_md)
@@ -2437,7 +2459,7 @@ iavf_fill_ctx_desc_ipsec_field(volatile uint64_t *field,
 
 	*field |= ipsec_field;
 }
-#endif
+
 
 static inline void
 iavf_fill_ctx_desc_tunnelling_field(volatile uint64_t *qw0,
@@ -2516,31 +2538,21 @@ iavf_fill_ctx_desc_tunnelling_field(volatile uint64_t *qw0,
 
 static inline uint16_t
 iavf_fill_ctx_desc_segmentation_field(volatile uint64_t *field,
-	                                  struct rte_mbuf *m
-#ifdef RTE_LIB_SECURITY
-                                      ,struct iavf_ipsec_crypto_pkt_metadata *ipsec_md
-#endif
-                                      )
+	struct rte_mbuf *m, struct iavf_ipsec_crypto_pkt_metadata *ipsec_md)
 {
 	uint64_t segmentation_field = 0;
 	uint64_t total_length = 0;
 
-#ifdef RTE_LIB_SECURITY
 	if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD) {
 		total_length = ipsec_md->l4_payload_len;
 	} else {
 		total_length = m->pkt_len - (m->l2_len + m->l3_len + m->l4_len);
 
 		if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
-			total_length -= m->outer_l3_len;
+			total_length -= m->outer_l3_len + m->outer_l2_len;
 	}
-#else
-    total_length = m->pkt_len - (m->l2_len + m->l3_len + m->l4_len);
 
-    if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)
-        total_length -= m->outer_l3_len;
-#endif
-#ifdef RTE_LIBRTE_IAVF_DEBUG_TX
+#ifdef RTE_ETHDEV_DEBUG_TX
 	if (!m->l4_len || !m->tso_segsz)
 		PMD_TX_LOG(DEBUG, "L4 length %d, LSO Segment size %d",
 			 m->l4_len, m->tso_segsz);
@@ -2567,10 +2579,7 @@ struct iavf_tx_context_desc_qws {
 
 static inline void
 iavf_fill_context_desc(volatile struct iavf_tx_context_desc *desc,
-                      struct rte_mbuf *m,
-#ifdef RTE_LIB_SECURITY
-                      struct iavf_ipsec_crypto_pkt_metadata *ipsec_md,
-#endif
+	struct rte_mbuf *m, struct iavf_ipsec_crypto_pkt_metadata *ipsec_md,
 	uint16_t *tlen, uint8_t vlan_flag)
 {
 	volatile struct iavf_tx_context_desc_qws *desc_qws =
@@ -2583,18 +2592,13 @@ iavf_fill_context_desc(volatile struct iavf_tx_context_desc *desc,
 
 	/* fill segmentation field */
 	if (m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG)) {
-#ifdef RTE_LIB_SECURITY
 		/* fill IPsec field */
 		if (m->ol_flags & RTE_MBUF_F_TX_SEC_OFFLOAD)
 			iavf_fill_ctx_desc_ipsec_field(&desc_qws->qw1,
 				ipsec_md);
-#endif
+
 		*tlen = iavf_fill_ctx_desc_segmentation_field(&desc_qws->qw1,
-				                                      m
-#ifdef RTE_LIB_SECURITY
-                                                      ,ipsec_md
-#endif
-                                                      );
+				m, ipsec_md);
 	}
 
 	/* fill tunnelling field */
@@ -2610,7 +2614,7 @@ iavf_fill_context_desc(volatile struct iavf_tx_context_desc *desc,
 		desc->l2tag2 = m->vlan_tci;
 }
 
-#ifdef RTE_LIB_SECURITY
+
 static inline void
 iavf_fill_ipsec_desc(volatile struct iavf_tx_ipsec_desc *desc,
 	const struct iavf_ipsec_crypto_pkt_metadata *md, uint16_t *ipsec_len)
@@ -2642,7 +2646,6 @@ iavf_fill_ipsec_desc(volatile struct iavf_tx_ipsec_desc *desc,
 			(md->ol_flags & IAVF_IPSEC_CRYPTO_OL_FLAGS_NATT ?
 			sizeof(struct rte_udp_hdr) : 0);
 }
-#endif
 
 static inline void
 iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
@@ -2662,6 +2665,10 @@ iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
 		command |= (uint64_t)IAVF_TX_DESC_CMD_IL2TAG1;
 		l2tag1 |= m->vlan_tci;
 	}
+
+	if ((m->ol_flags &
+	    (IAVF_TX_CKSUM_OFFLOAD_MASK | RTE_MBUF_F_TX_SEC_OFFLOAD)) == 0)
+		goto skip_cksum;
 
 	/* Set MACLEN */
 	if (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK &&
@@ -2722,6 +2729,7 @@ iavf_build_data_desc_cmd_offset_fields(volatile uint64_t *qw1,
 		break;
 	}
 
+skip_cksum:
 	*qw1 = rte_cpu_to_le_64((((uint64_t)command <<
 		IAVF_TXD_DATA_QW1_CMD_SHIFT) & IAVF_TXD_DATA_QW1_CMD_MASK) |
 		(((uint64_t)offset << IAVF_TXD_DATA_QW1_OFFSET_SHIFT) &
@@ -2809,13 +2817,13 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		mb = tx_pkts[idx];
 
 		RTE_MBUF_PREFETCH_TO_FREE(txe->mbuf);
-#ifdef RTE_LIB_SECURITY
+
 		/**
 		 * Get metadata for ipsec crypto from mbuf dynamic fields if
 		 * security offload is specified.
 		 */
 		ipsec_md = iavf_ipsec_crypto_get_pkt_metadata(txq, mb);
-#endif
+
 		nb_desc_data = mb->nb_segs;
 		nb_desc_ctx =
 			iavf_calc_context_desc(mb->ol_flags, txq->vlan_flag);
@@ -2884,18 +2892,14 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				txe->mbuf = NULL;
 			}
 
-			iavf_fill_context_desc(ctx_desc, mb,
-#ifdef RTE_LIB_SECURITY
-                                  ipsec_md,
-#endif
-                                  &tlen,
-				                  txq->vlan_flag);
+			iavf_fill_context_desc(ctx_desc, mb, ipsec_md, &tlen,
+				txq->vlan_flag);
 			IAVF_DUMP_TX_DESC(txq, ctx_desc, desc_idx);
 
 			txe->last_id = desc_idx_last;
 			desc_idx = txe->next_id;
 			txe = txn;
-			}
+		}
 
 		if (nb_desc_ipsec) {
 			volatile struct iavf_tx_ipsec_desc *ipsec_desc =
@@ -2908,11 +2912,9 @@ iavf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			if (txe->mbuf) {
 				rte_pktmbuf_free_seg(txe->mbuf);
 				txe->mbuf = NULL;
-		}
+			}
 
-#ifdef RTE_LIB_SECURITY
 			iavf_fill_ipsec_desc(ipsec_desc, ipsec_md, &ipseclen);
-#endif
 
 			IAVF_DUMP_TX_DESC(txq, ipsec_desc, desc_idx);
 
@@ -3637,7 +3639,6 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	struct rte_mbuf *m;
 	struct iavf_tx_queue *txq = tx_queue;
 	struct rte_eth_dev *dev = &rte_eth_devices[txq->port_id];
-	uint16_t max_frame_size = dev->data->mtu + IAVF_ETH_OVERHEAD;
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	struct iavf_adapter *adapter = IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 
@@ -3649,13 +3650,14 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		ol_flags = m->ol_flags;
 
 		/* Check condition for nb_segs > IAVF_TX_MAX_MTU_SEG. */
-		if (!(ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
+		if (!(ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_UDP_SEG))) {
 			if (m->nb_segs > IAVF_TX_MAX_MTU_SEG) {
 				rte_errno = EINVAL;
 				return i;
 			}
 		} else if ((m->tso_segsz < IAVF_MIN_TSO_MSS) ||
-			   (m->tso_segsz > IAVF_MAX_TSO_MSS)) {
+			   (m->tso_segsz > IAVF_MAX_TSO_MSS) ||
+			   (m->nb_segs > txq->nb_tx_desc)) {
 			/* MSS outside the range are considered malicious */
 			rte_errno = EINVAL;
 			return i;
@@ -3666,11 +3668,8 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			return i;
 		}
 
-		/* check the data_len in mbuf */
-		if (m->data_len < IAVF_TX_MIN_PKT_LEN ||
-			m->data_len > max_frame_size) {
+		if (m->pkt_len < IAVF_TX_MIN_PKT_LEN) {
 			rte_errno = EINVAL;
-			PMD_DRV_LOG(ERR, "INVALID mbuf: bad data_len=[%hu]", m->data_len);
 			return i;
 		}
 
@@ -3708,6 +3707,30 @@ iavf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	return i;
 }
 
+static uint16_t
+iavf_recv_pkts_no_poll(void *rx_queue, struct rte_mbuf **rx_pkts,
+				uint16_t nb_pkts)
+{
+	struct iavf_rx_queue *rxq = rx_queue;
+	if (!rxq->vsi || rxq->vsi->adapter->no_poll)
+		return 0;
+
+	return rxq->vsi->adapter->rx_pkt_burst(rx_queue,
+								rx_pkts, nb_pkts);
+}
+
+static uint16_t
+iavf_xmit_pkts_no_poll(void *tx_queue, struct rte_mbuf **tx_pkts,
+				uint16_t nb_pkts)
+{
+	struct iavf_tx_queue *txq = tx_queue;
+	if (!txq->vsi || txq->vsi->adapter->no_poll)
+		return 0;
+
+	return txq->vsi->adapter->tx_pkt_burst(tx_queue,
+								tx_pkts, nb_pkts);
+}
+
 /* choose rx function*/
 void
 iavf_set_rx_function(struct rte_eth_dev *dev)
@@ -3715,6 +3738,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	int no_poll_on_link_down = adapter->devargs.no_poll_on_link_down;
 	int i;
 	struct iavf_rx_queue *rxq;
 	bool use_flex = true;
@@ -3758,25 +3782,41 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 		}
 
 		if (dev->data->scattered_rx) {
-			if (!use_avx512) {
+			if (!use_avx2 && !use_avx512) {
 				PMD_DRV_LOG(DEBUG,
-					    "Using %sVector Scattered Rx (port %d).",
-					    use_avx2 ? "avx2 " : "",
+					    "Using Vector Scattered Rx (port %d).",
 					    dev->data->port_id);
 			} else {
-				if (check_ret == IAVF_VECTOR_PATH)
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 Vector Scattered Rx (port %d).",
-						    dev->data->port_id);
-				else
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 OFFLOAD Vector Scattered Rx (port %d).",
-						    dev->data->port_id);
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 OFFLOAD Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+				} else {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 OFFLOAD Vector Scattered Rx (port %d).",
+							    dev->data->port_id);
+				}
 			}
 			if (use_flex) {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_scattered_pkts_vec_avx2_flex_rxd :
-					iavf_recv_scattered_pkts_vec_flex_rxd;
+				dev->rx_pkt_burst = iavf_recv_scattered_pkts_vec_flex_rxd;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2_flex_rxd;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2_flex_rxd_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3788,9 +3828,15 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 				}
 #endif
 			} else {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_scattered_pkts_vec_avx2 :
-					iavf_recv_scattered_pkts_vec;
+				dev->rx_pkt_burst = iavf_recv_scattered_pkts_vec;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_scattered_pkts_vec_avx2_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3803,24 +3849,40 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 #endif
 			}
 		} else {
-			if (!use_avx512) {
-				PMD_DRV_LOG(DEBUG, "Using %sVector Rx (port %d).",
-					    use_avx2 ? "avx2 " : "",
+			if (!use_avx2 && !use_avx512) {
+				PMD_DRV_LOG(DEBUG, "Using Vector Rx (port %d).",
 					    dev->data->port_id);
 			} else {
-				if (check_ret == IAVF_VECTOR_PATH)
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 Vector Rx (port %d).",
-						    dev->data->port_id);
-				else
-					PMD_DRV_LOG(DEBUG,
-						    "Using AVX512 OFFLOAD Vector Rx (port %d).",
-						    dev->data->port_id);
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 Vector Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX2 OFFLOAD Vector Rx (port %d).",
+							    dev->data->port_id);
+				} else {
+					if (check_ret == IAVF_VECTOR_PATH)
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 Vector Rx (port %d).",
+							    dev->data->port_id);
+					else
+						PMD_DRV_LOG(DEBUG,
+							    "Using AVX512 OFFLOAD Vector Rx (port %d).",
+							    dev->data->port_id);
+				}
 			}
 			if (use_flex) {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_pkts_vec_avx2_flex_rxd :
-					iavf_recv_pkts_vec_flex_rxd;
+				dev->rx_pkt_burst = iavf_recv_pkts_vec_flex_rxd;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2_flex_rxd;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2_flex_rxd_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3832,9 +3894,15 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 				}
 #endif
 			} else {
-				dev->rx_pkt_burst = use_avx2 ?
-					iavf_recv_pkts_vec_avx2 :
-					iavf_recv_pkts_vec;
+				dev->rx_pkt_burst = iavf_recv_pkts_vec;
+				if (use_avx2) {
+					if (check_ret == IAVF_VECTOR_PATH)
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2;
+					else
+						dev->rx_pkt_burst =
+							iavf_recv_pkts_vec_avx2_offload;
+				}
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3848,6 +3916,10 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 			}
 		}
 
+		if (no_poll_on_link_down) {
+			adapter->rx_pkt_burst = dev->rx_pkt_burst;
+			dev->rx_pkt_burst = iavf_recv_pkts_no_poll;
+		}
 		return;
 	}
 #elif defined RTE_ARCH_ARM
@@ -3863,6 +3935,11 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 			(void)iavf_rxq_vec_setup(rxq);
 		}
 		dev->rx_pkt_burst = iavf_recv_pkts_vec;
+
+		if (no_poll_on_link_down) {
+			adapter->rx_pkt_burst = dev->rx_pkt_burst;
+			dev->rx_pkt_burst = iavf_recv_pkts_no_poll;
+		}
 		return;
 	}
 #endif
@@ -3885,12 +3962,20 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 		else
 			dev->rx_pkt_burst = iavf_recv_pkts;
 	}
+
+	if (no_poll_on_link_down) {
+		adapter->rx_pkt_burst = dev->rx_pkt_burst;
+		dev->rx_pkt_burst = iavf_recv_pkts_no_poll;
+	}
 }
 
 /* choose tx function*/
 void
 iavf_set_tx_function(struct rte_eth_dev *dev)
 {
+	struct iavf_adapter *adapter =
+		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	int no_poll_on_link_down = adapter->devargs.no_poll_on_link_down;
 #ifdef RTE_ARCH_X86
 	struct iavf_tx_queue *txq;
 	int i;
@@ -3903,14 +3988,14 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 
 	if (check_ret >= 0 &&
 	    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) {
-		/* SSE and AVX2 not support offload path yet. */
+		/* SSE not support offload path yet. */
 		if (check_ret == IAVF_VECTOR_PATH) {
 			use_sse = true;
-			if ((rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 ||
-			     rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1) &&
-			    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
-				use_avx2 = true;
 		}
+		if ((rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1 ||
+		     rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1) &&
+		    rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
+			use_avx2 = true;
 #ifdef CC_AVX512_SUPPORT
 		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F) == 1 &&
 		    rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512BW) == 1 &&
@@ -3921,15 +4006,28 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 		if (!use_sse && !use_avx2 && !use_avx512)
 			goto normal;
 
-		if (!use_avx512) {
-			PMD_DRV_LOG(DEBUG, "Using %sVector Tx (port %d).",
-				    use_avx2 ? "avx2 " : "",
-				    dev->data->port_id);
-			dev->tx_pkt_burst = use_avx2 ?
-					    iavf_xmit_pkts_vec_avx2 :
-					    iavf_xmit_pkts_vec;
-		}
 		dev->tx_pkt_prepare = NULL;
+		if (use_sse) {
+			PMD_DRV_LOG(DEBUG, "Using Vector Tx (port %d).",
+				    dev->data->port_id);
+			dev->tx_pkt_burst = iavf_xmit_pkts_vec;
+		}
+		if (use_avx2) {
+			if (check_ret == IAVF_VECTOR_PATH) {
+				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx2;
+				PMD_DRV_LOG(DEBUG, "Using AVX2 Vector Tx (port %d).",
+					    dev->data->port_id);
+			} else if (check_ret == IAVF_VECTOR_CTX_OFFLOAD_PATH) {
+				PMD_DRV_LOG(DEBUG,
+					"AVX2 does not support outer checksum offload.");
+				goto normal;
+			} else {
+				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx2_offload;
+				dev->tx_pkt_prepare = iavf_prep_pkts;
+				PMD_DRV_LOG(DEBUG, "Using AVX2 OFFLOAD Vector Tx (port %d).",
+					    dev->data->port_id);
+			}
+		}
 #ifdef CC_AVX512_SUPPORT
 		if (use_avx512) {
 			if (check_ret == IAVF_VECTOR_PATH) {
@@ -3964,6 +4062,10 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 #endif
 		}
 
+		if (no_poll_on_link_down) {
+			adapter->tx_pkt_burst = dev->tx_pkt_burst;
+			dev->tx_pkt_burst = iavf_xmit_pkts_no_poll;
+		}
 		return;
 	}
 
@@ -3973,6 +4075,11 @@ normal:
 		    dev->data->port_id);
 	dev->tx_pkt_burst = iavf_xmit_pkts;
 	dev->tx_pkt_prepare = iavf_prep_pkts;
+
+	if (no_poll_on_link_down) {
+		adapter->tx_pkt_burst = dev->tx_pkt_burst;
+		dev->tx_pkt_burst = iavf_xmit_pkts_no_poll;
+	}
 }
 
 static int
@@ -4754,48 +4861,3 @@ iavf_set_default_ptype_table(struct rte_eth_dev *dev)
 	for (i = 0; i < IAVF_MAX_PKT_TYPE; i++)
 		ad->ptype_tbl[i] = iavf_get_default_ptype(i);
 }
-
-#ifndef CC_AVX2_SUPPORT
-
-uint16_t
-iavf_recv_scattered_pkts_vec_avx2_flex_rxd(void *rx_queue,
-                                           struct rte_mbuf **rx_pkts,
-                                           uint16_t nb_pkts)
-{
-    iavf_recv_scattered_pkts_vec_flex_rxd(rx_queue, rx_pkts, nb_pkts);
-}
-
-uint16_t
-iavf_recv_scattered_pkts_vec_avx2(void *rx_queue,
-                                  struct rte_mbuf **rx_pkts,
-                                  uint16_t nb_pkts)
-{
-    iavf_recv_scattered_pkts_vec(rx_queue, rx_pkts, nb_pkts);
-}
-
-uint16_t
-iavf_recv_pkts_vec_avx2_flex_rxd(void *rx_queue,
-                                struct rte_mbuf **rx_pkts,
-                                uint16_t nb_pkts)
-{
-    iavf_recv_pkts_vec_flex_rxd(rx_queue, rx_pkts, nb_pkts);
-}
-
-
-uint16_t
-iavf_recv_pkts_vec_avx2(void *rx_queue,
-                        struct rte_mbuf **rx_pkts,
-                        uint16_t nb_pkts)
-{
-    iavf_recv_pkts_vec(rx_queue, rx_pkts, nb_pkts);
-}
-
-uint16_t
-iavf_xmit_pkts_vec_avx2(void *tx_queue,
-                        struct rte_mbuf **tx_pkts,
-                        uint16_t nb_pkts)
-{
-    iavf_xmit_pkts_vec(tx_queue, tx_pkts, nb_pkts);
-}
-
-#endif /* ifndef CC_AVX2_SUPPORT */

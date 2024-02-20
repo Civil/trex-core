@@ -34,7 +34,7 @@ extern "C" {
 #define RTE_LOGTYPE_PMD        5 /**< Log related to poll mode driver. */
 #define RTE_LOGTYPE_HASH       6 /**< Log related to hash table. */
 #define RTE_LOGTYPE_LPM        7 /**< Log related to LPM. */
-#define RTE_LOGTYPE_KNI        8 /**< Log related to KNI. */
+				 /* was RTE_LOGTYPE_KNI */
 #define RTE_LOGTYPE_ACL        9 /**< Log related to ACL. */
 #define RTE_LOGTYPE_POWER     10 /**< Log related to power. */
 #define RTE_LOGTYPE_METER     11 /**< Log related to QoS meter. */
@@ -277,11 +277,7 @@ void rte_log_dump(FILE *f);
  *   - Negative on error.
  */
 int rte_log(uint32_t level, uint32_t logtype, const char *format, ...)
-#ifdef __GNUC__
-#if (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ > 2))
 	__rte_cold
-#endif
-#endif
 	__rte_format_printf(3, 4);
 
 /**

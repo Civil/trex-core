@@ -158,7 +158,7 @@ ssovf_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *dev_info)
 					RTE_EVENT_DEV_CAP_NONSEQ_MODE |
 					RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
 					RTE_EVENT_DEV_CAP_MAINTENANCE_FREE;
-
+	dev_info->max_profiles_per_port = 1;
 }
 
 static int
@@ -880,7 +880,7 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 	}
 
 	eventdev = rte_event_pmd_vdev_init(name, sizeof(struct ssovf_evdev),
-				rte_socket_id());
+				rte_socket_id(), vdev);
 	if (eventdev == NULL) {
 		ssovf_log_err("Failed to create eventdev vdev %s", name);
 		return -ENOMEM;

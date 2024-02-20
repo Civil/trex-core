@@ -15,8 +15,11 @@
 #include <rte_log.h>
 #include <rte_per_lcore.h>
 
-#include "eal_log.h"
-#include "eal_private.h"
+#include "log_internal.h"
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+#define strdup _strdup
+#endif
 
 struct rte_log_dynamic_type {
 	const char *name;
@@ -90,7 +93,7 @@ rte_log_get_stream(void)
 		 * of stderr, even if the application closes and
 		 * reopens it.
 		 */
-		return default_log_stream ? : stderr;
+		return default_log_stream != NULL ? default_log_stream : stderr;
 	}
 	return f;
 }
@@ -356,7 +359,6 @@ static const struct logtype logtype_strings[] = {
 	{RTE_LOGTYPE_PMD,        "pmd"},
 	{RTE_LOGTYPE_HASH,       "lib.hash"},
 	{RTE_LOGTYPE_LPM,        "lib.lpm"},
-	{RTE_LOGTYPE_KNI,        "lib.kni"},
 	{RTE_LOGTYPE_ACL,        "lib.acl"},
 	{RTE_LOGTYPE_POWER,      "lib.power"},
 	{RTE_LOGTYPE_METER,      "lib.meter"},

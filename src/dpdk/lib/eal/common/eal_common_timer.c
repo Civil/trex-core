@@ -44,12 +44,8 @@ estimate_tsc_freq(void)
 	/* assume that the rte_delay_us_sleep() will sleep for 1 second */
 	uint64_t start = rte_rdtsc();
 	rte_delay_us_sleep(US_PER_S);
-#if defined(TREX_PATCH) && !defined(RTE_ARCH_ARM64)
-	return rte_rdtsc() - start;
-#else
 	/* Round up to 10Mhz. 1E7 ~ 10Mhz */
 	return RTE_ALIGN_MUL_NEAR(rte_rdtsc() - start, CYC_PER_10MHZ);
-#endif
 }
 
 void

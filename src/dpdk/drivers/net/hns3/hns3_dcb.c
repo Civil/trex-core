@@ -237,9 +237,9 @@ hns3_dcb_qs_weight_cfg(struct hns3_hw *hw, uint16_t qs_id, uint8_t dwrr)
 static int
 hns3_dcb_ets_tc_dwrr_cfg(struct hns3_hw *hw)
 {
-#define DEFAULT_TC_WEIGHT	1
 #define DEFAULT_TC_OFFSET	14
 	struct hns3_ets_tc_weight_cmd *ets_weight;
+	struct hns3_pg_info *pg_info;
 	struct hns3_cmd_desc desc;
 	uint8_t i;
 
@@ -247,13 +247,6 @@ hns3_dcb_ets_tc_dwrr_cfg(struct hns3_hw *hw)
 	ets_weight = (struct hns3_ets_tc_weight_cmd *)desc.data;
 
 	for (i = 0; i < HNS3_MAX_TC_NUM; i++) {
-		struct hns3_pg_info *pg_info;
-
-		ets_weight->tc_weight[i] = DEFAULT_TC_WEIGHT;
-
-		if (!(hw->hw_tc_map & BIT(i)))
-			continue;
-
 		pg_info = &hw->dcb_info.pg_info[hw->dcb_info.tc_info[i].pgid];
 		ets_weight->tc_weight[i] = pg_info->tc_dwrr[i];
 	}
@@ -1089,7 +1082,7 @@ hns3_dcb_map_cfg(struct hns3_hw *hw)
 
 	ret = hns3_pg_to_pri_map(hw);
 	if (ret) {
-		hns3_err(hw, "pri_to_pg mapping fail: %d", ret);
+		hns3_err(hw, "pg_to_pri mapping fail: %d", ret);
 		return ret;
 	}
 

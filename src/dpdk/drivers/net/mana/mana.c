@@ -6,11 +6,14 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_kvargs.h>
 #include <rte_eal_paging.h>
+#include <rte_pci.h>
 
 #include <infiniband/verbs.h>
 #include <infiniband/manadv.h>
@@ -286,11 +289,12 @@ mana_dev_info_get(struct rte_eth_dev *dev,
 {
 	struct mana_priv *priv = dev->data->dev_private;
 
-	dev_info->max_mtu = RTE_ETHER_MTU;
+	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
+	dev_info->max_mtu = MANA_MAX_MTU;
 
 	/* RX params */
 	dev_info->min_rx_bufsize = MIN_RX_BUF_SIZE;
-	dev_info->max_rx_pktlen = MAX_FRAME_SIZE;
+	dev_info->max_rx_pktlen = MANA_MAX_MTU + RTE_ETHER_HDR_LEN;
 
 	dev_info->max_rx_queues = priv->max_rx_queues;
 	dev_info->max_tx_queues = priv->max_tx_queues;
@@ -487,6 +491,15 @@ mana_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		goto fail;
 	}
 
+	txq->gdma_comp_buf = rte_malloc_socket("mana_txq_comp",
+			sizeof(*txq->gdma_comp_buf) * nb_desc,
+			RTE_CACHE_LINE_SIZE, socket_id);
+	if (!txq->gdma_comp_buf) {
+		DRV_LOG(ERR, "failed to allocate txq comp");
+		ret = -ENOMEM;
+		goto fail;
+	}
+
 	ret = mana_mr_btree_init(&txq->mr_btree,
 				 MANA_MR_BTREE_PER_QUEUE_N, socket_id);
 	if (ret) {
@@ -506,6 +519,7 @@ mana_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	return 0;
 
 fail:
+	rte_free(txq->gdma_comp_buf);
 	rte_free(txq->desc_ring);
 	rte_free(txq);
 	return ret;
@@ -518,6 +532,7 @@ mana_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 
 	mana_mr_btree_free(&txq->mr_btree);
 
+	rte_free(txq->gdma_comp_buf);
 	rte_free(txq->desc_ring);
 	rte_free(txq);
 }
@@ -557,6 +572,15 @@ mana_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	rxq->desc_ring_head = 0;
 	rxq->desc_ring_tail = 0;
 
+	rxq->gdma_comp_buf = rte_malloc_socket("mana_rxq_comp",
+			sizeof(*rxq->gdma_comp_buf) * nb_desc,
+			RTE_CACHE_LINE_SIZE, socket_id);
+	if (!rxq->gdma_comp_buf) {
+		DRV_LOG(ERR, "failed to allocate rxq comp");
+		ret = -ENOMEM;
+		goto fail;
+	}
+
 	ret = mana_mr_btree_init(&rxq->mr_btree,
 				 MANA_MR_BTREE_PER_QUEUE_N, socket_id);
 	if (ret) {
@@ -572,6 +596,7 @@ mana_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	return 0;
 
 fail:
+	rte_free(rxq->gdma_comp_buf);
 	rte_free(rxq->desc_ring);
 	rte_free(rxq);
 	return ret;
@@ -584,6 +609,7 @@ mana_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 
 	mana_mr_btree_free(&rxq->mr_btree);
 
+	rte_free(rxq->gdma_comp_buf);
 	rte_free(rxq->desc_ring);
 	rte_free(rxq);
 }
@@ -678,6 +704,94 @@ mana_dev_stats_reset(struct rte_eth_dev *dev __rte_unused)
 	return 0;
 }
 
+static int
+mana_get_ifname(const struct mana_priv *priv, char (*ifname)[IF_NAMESIZE])
+{
+	int ret;
+	DIR *dir;
+	struct dirent *dent;
+
+	MANA_MKSTR(dirpath, "%s/device/net", priv->ib_ctx->device->ibdev_path);
+
+	dir = opendir(dirpath);
+	if (dir == NULL)
+		return -ENODEV;
+
+	while ((dent = readdir(dir)) != NULL) {
+		char *name = dent->d_name;
+		FILE *file;
+		struct rte_ether_addr addr;
+		char *mac = NULL;
+
+		if ((name[0] == '.') &&
+		    ((name[1] == '\0') ||
+		     ((name[1] == '.') && (name[2] == '\0'))))
+			continue;
+
+		MANA_MKSTR(path, "%s/%s/address", dirpath, name);
+
+		file = fopen(path, "r");
+		if (!file) {
+			ret = -ENODEV;
+			break;
+		}
+
+		ret = fscanf(file, "%ms", &mac);
+		fclose(file);
+
+		if (ret <= 0) {
+			ret = -EINVAL;
+			break;
+		}
+
+		ret = rte_ether_unformat_addr(mac, &addr);
+		free(mac);
+		if (ret)
+			break;
+
+		if (rte_is_same_ether_addr(&addr, priv->dev_data->mac_addrs)) {
+			strlcpy(*ifname, name, sizeof(*ifname));
+			ret = 0;
+			break;
+		}
+	}
+
+	closedir(dir);
+	return ret;
+}
+
+static int
+mana_ifreq(const struct mana_priv *priv, int req, struct ifreq *ifr)
+{
+	int sock, ret;
+
+	sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+	if (sock == -1)
+		return -errno;
+
+	ret = mana_get_ifname(priv, &ifr->ifr_name);
+	if (ret) {
+		close(sock);
+		return ret;
+	}
+
+	if (ioctl(sock, req, ifr) == -1)
+		ret = -errno;
+
+	close(sock);
+
+	return ret;
+}
+
+static int
+mana_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
+{
+	struct mana_priv *priv = dev->data->dev_private;
+	struct ifreq request = { .ifr_mtu = mtu, };
+
+	return mana_ifreq(priv, SIOCSIFMTU, &request);
+}
+
 static const struct eth_dev_ops mana_dev_ops = {
 	.dev_configure		= mana_dev_configure,
 	.dev_start		= mana_dev_start,
@@ -698,6 +812,7 @@ static const struct eth_dev_ops mana_dev_ops = {
 	.link_update		= mana_dev_link_update,
 	.stats_get		= mana_dev_stats_get,
 	.stats_reset		= mana_dev_stats_reset,
+	.mtu_set		= mana_mtu_set,
 };
 
 static const struct eth_dev_ops mana_dev_secondary_ops = {
@@ -800,7 +915,6 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 	DIR *dir;
 	struct dirent *dent;
 	unsigned int dev_port;
-	char mac[20];
 
 	MANA_MKSTR(path, "%s/device/net", device->ibdev_path);
 
@@ -810,6 +924,7 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 
 	while ((dent = readdir(dir))) {
 		char *name = dent->d_name;
+		char *mac = NULL;
 
 		MANA_MKSTR(port_path, "%s/%s/dev_port", path, name);
 
@@ -837,7 +952,7 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 			if (!file)
 				continue;
 
-			ret = fscanf(file, "%s", mac);
+			ret = fscanf(file, "%ms", &mac);
 			fclose(file);
 
 			if (ret < 0)
@@ -846,6 +961,8 @@ get_port_mac(struct ibv_device *device, unsigned int port,
 			ret = rte_ether_unformat_addr(mac, addr);
 			if (ret)
 				DRV_LOG(ERR, "unrecognized mac addr %s", mac);
+
+			free(mac);
 			break;
 		}
 	}
@@ -1238,7 +1355,7 @@ mana_probe_port(struct ibv_device *ibdev, struct ibv_device_attr_ex *dev_attr,
 	/* Create a parent domain with the port number */
 	attr.pd = priv->ib_pd;
 	attr.comp_mask = IBV_PARENT_DOMAIN_INIT_ATTR_PD_CONTEXT;
-	attr.pd_context = (void *)(uint64_t)port;
+	attr.pd_context = (void *)(uintptr_t)port;
 	priv->ib_parent_pd = ibv_alloc_parent_domain(ctx, &attr);
 	if (!priv->ib_parent_pd) {
 		DRV_LOG(ERR, "ibv_alloc_parent_domain failed port %d", port);
@@ -1321,6 +1438,7 @@ failed:
 /*
  * Goes through the IB device list to look for the IB port matching the
  * mac_addr. If found, create a rte_eth_dev for it.
+ * Return value: number of successfully probed devices
  */
 static int
 mana_pci_probe_mac(struct rte_pci_device *pci_dev,
@@ -1330,8 +1448,9 @@ mana_pci_probe_mac(struct rte_pci_device *pci_dev,
 	int ibv_idx;
 	struct ibv_context *ctx;
 	int num_devices;
-	int ret = 0;
+	int ret;
 	uint8_t port;
+	int count = 0;
 
 	ibv_list = ibv_get_device_list(&num_devices);
 	for (ibv_idx = 0; ibv_idx < num_devices; ibv_idx++) {
@@ -1346,10 +1465,7 @@ mana_pci_probe_mac(struct rte_pci_device *pci_dev,
 			continue;
 
 		/* Ignore if this IB device is not this PCI device */
-		if (pci_dev->addr.domain != pci_addr.domain ||
-		    pci_dev->addr.bus != pci_addr.bus ||
-		    pci_dev->addr.devid != pci_addr.devid ||
-		    pci_dev->addr.function != pci_addr.function)
+		if (rte_pci_addr_cmp(&pci_dev->addr, &pci_addr) != 0)
 			continue;
 
 		ctx = ibv_open_device(ibdev);
@@ -1360,6 +1476,12 @@ mana_pci_probe_mac(struct rte_pci_device *pci_dev,
 		}
 		ret = ibv_query_device_ex(ctx, NULL, &dev_attr);
 		ibv_close_device(ctx);
+
+		if (ret) {
+			DRV_LOG(ERR, "Failed to query IB device %s",
+				ibdev->name);
+			continue;
+		}
 
 		for (port = 1; port <= dev_attr.orig_attr.phys_port_cnt;
 		     port++) {
@@ -1372,15 +1494,17 @@ mana_pci_probe_mac(struct rte_pci_device *pci_dev,
 				continue;
 
 			ret = mana_probe_port(ibdev, &dev_attr, port, pci_dev, &addr);
-			if (ret)
+			if (ret) {
 				DRV_LOG(ERR, "Probe on IB port %u failed %d", port, ret);
-			else
+			} else {
+				count++;
 				DRV_LOG(INFO, "Successfully probed on IB port %u", port);
+			}
 		}
 	}
 
 	ibv_free_device_list(ibv_list);
-	return ret;
+	return count;
 }
 
 /*
@@ -1394,6 +1518,7 @@ mana_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct mana_conf conf = {0};
 	unsigned int i;
 	int ret;
+	int count = 0;
 
 	if (args && args->drv_str) {
 		ret = mana_parse_args(args, &conf);
@@ -1411,16 +1536,21 @@ mana_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	}
 
 	/* If there are no driver parameters, probe on all ports */
-	if (!conf.index)
-		return mana_pci_probe_mac(pci_dev, NULL);
-
-	for (i = 0; i < conf.index; i++) {
-		ret = mana_pci_probe_mac(pci_dev, &conf.mac_array[i]);
-		if (ret)
-			return ret;
+	if (conf.index) {
+		for (i = 0; i < conf.index; i++)
+			count += mana_pci_probe_mac(pci_dev,
+						    &conf.mac_array[i]);
+	} else {
+		count = mana_pci_probe_mac(pci_dev, NULL);
 	}
 
-	return 0;
+	if (!count) {
+		rte_memzone_free(mana_shared_mz);
+		mana_shared_mz = NULL;
+		ret = -ENODEV;
+	}
+
+	return ret;
 }
 
 static int
@@ -1453,6 +1583,7 @@ mana_pci_remove(struct rte_pci_device *pci_dev)
 		if (!mana_shared_data->primary_cnt) {
 			DRV_LOG(DEBUG, "free shared memezone data");
 			rte_memzone_free(mana_shared_mz);
+			mana_shared_mz = NULL;
 		}
 
 		rte_spinlock_unlock(&mana_shared_data_lock);

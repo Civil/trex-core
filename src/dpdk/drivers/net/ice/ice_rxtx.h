@@ -51,7 +51,12 @@ extern int ice_timestamp_dynfield_offset;
 /* Max header size can be 2K - 64 bytes */
 #define ICE_RX_HDR_BUF_SIZE    (2048 - 64)
 
+/* Max data buffer size must be 16K - 128 bytes */
+#define ICE_RX_MAX_DATA_BUF_SIZE	(16 * 1024 - 128)
+
 #define ICE_HEADER_SPLIT_ENA   BIT(0)
+
+#define ICE_TX_MTU_SEG_MAX	8
 
 typedef void (*ice_rx_release_mbufs_t)(struct ice_rx_queue *rxq);
 typedef void (*ice_tx_release_mbufs_t)(struct ice_tx_queue *txq);
@@ -117,6 +122,7 @@ struct ice_rx_queue {
 	uint64_t hw_time_update; /* SW time of HW record updating */
 	struct rte_eth_rxseg_split rxseg[ICE_RX_MAX_NSEG];
 	uint32_t rxseg_nb;
+	bool ts_enable; /* if rxq timestamp is enabled */
 };
 
 struct ice_tx_entry {

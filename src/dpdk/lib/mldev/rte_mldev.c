@@ -439,7 +439,8 @@ rte_ml_dev_stats_reset(int16_t dev_id)
 }
 
 int
-rte_ml_dev_xstats_names_get(int16_t dev_id, struct rte_ml_dev_xstats_map *xstats_map, uint32_t size)
+rte_ml_dev_xstats_names_get(int16_t dev_id, enum rte_ml_dev_xstats_mode mode, int32_t model_id,
+			    struct rte_ml_dev_xstats_map *xstats_map, uint32_t size)
 {
 	struct rte_ml_dev *dev;
 
@@ -452,7 +453,7 @@ rte_ml_dev_xstats_names_get(int16_t dev_id, struct rte_ml_dev_xstats_map *xstats
 	if (*dev->dev_ops->dev_xstats_names_get == NULL)
 		return -ENOTSUP;
 
-	return (*dev->dev_ops->dev_xstats_names_get)(dev, xstats_map, size);
+	return (*dev->dev_ops->dev_xstats_names_get)(dev, mode, model_id, xstats_map, size);
 }
 
 int
@@ -483,7 +484,8 @@ rte_ml_dev_xstats_by_name_get(int16_t dev_id, const char *name, uint16_t *stat_i
 }
 
 int
-rte_ml_dev_xstats_get(int16_t dev_id, const uint16_t *stat_ids, uint64_t *values, uint16_t nb_ids)
+rte_ml_dev_xstats_get(int16_t dev_id, enum rte_ml_dev_xstats_mode mode, int32_t model_id,
+		      const uint16_t stat_ids[], uint64_t values[], uint16_t nb_ids)
 {
 	struct rte_ml_dev *dev;
 
@@ -506,11 +508,12 @@ rte_ml_dev_xstats_get(int16_t dev_id, const uint16_t *stat_ids, uint64_t *values
 		return -EINVAL;
 	}
 
-	return (*dev->dev_ops->dev_xstats_get)(dev, stat_ids, values, nb_ids);
+	return (*dev->dev_ops->dev_xstats_get)(dev, mode, model_id, stat_ids, values, nb_ids);
 }
 
 int
-rte_ml_dev_xstats_reset(int16_t dev_id, const uint16_t *stat_ids, uint16_t nb_ids)
+rte_ml_dev_xstats_reset(int16_t dev_id, enum rte_ml_dev_xstats_mode mode, int32_t model_id,
+			const uint16_t stat_ids[], uint16_t nb_ids)
 {
 	struct rte_ml_dev *dev;
 
@@ -523,7 +526,7 @@ rte_ml_dev_xstats_reset(int16_t dev_id, const uint16_t *stat_ids, uint16_t nb_id
 	if (*dev->dev_ops->dev_xstats_reset == NULL)
 		return -ENOTSUP;
 
-	return (*dev->dev_ops->dev_xstats_reset)(dev, stat_ids, nb_ids);
+	return (*dev->dev_ops->dev_xstats_reset)(dev, mode, model_id, stat_ids, nb_ids);
 }
 
 int
@@ -689,46 +692,8 @@ rte_ml_model_params_update(int16_t dev_id, uint16_t model_id, void *buffer)
 }
 
 int
-rte_ml_io_input_size_get(int16_t dev_id, uint16_t model_id, uint32_t nb_batches,
-			 uint64_t *input_qsize, uint64_t *input_dsize)
-{
-	struct rte_ml_dev *dev;
-
-	if (!rte_ml_dev_is_valid_dev(dev_id)) {
-		RTE_MLDEV_LOG(ERR, "Invalid dev_id = %d\n", dev_id);
-		return -EINVAL;
-	}
-
-	dev = rte_ml_dev_pmd_get_dev(dev_id);
-	if (*dev->dev_ops->io_input_size_get == NULL)
-		return -ENOTSUP;
-
-	return (*dev->dev_ops->io_input_size_get)(dev, model_id, nb_batches, input_qsize,
-						  input_dsize);
-}
-
-int
-rte_ml_io_output_size_get(int16_t dev_id, uint16_t model_id, uint32_t nb_batches,
-			  uint64_t *output_qsize, uint64_t *output_dsize)
-{
-	struct rte_ml_dev *dev;
-
-	if (!rte_ml_dev_is_valid_dev(dev_id)) {
-		RTE_MLDEV_LOG(ERR, "Invalid dev_id = %d\n", dev_id);
-		return -EINVAL;
-	}
-
-	dev = rte_ml_dev_pmd_get_dev(dev_id);
-	if (*dev->dev_ops->io_output_size_get == NULL)
-		return -ENOTSUP;
-
-	return (*dev->dev_ops->io_output_size_get)(dev, model_id, nb_batches, output_qsize,
-						   output_dsize);
-}
-
-int
-rte_ml_io_quantize(int16_t dev_id, uint16_t model_id, uint16_t nb_batches, void *dbuffer,
-		   void *qbuffer)
+rte_ml_io_quantize(int16_t dev_id, uint16_t model_id, struct rte_ml_buff_seg **dbuffer,
+		   struct rte_ml_buff_seg **qbuffer)
 {
 	struct rte_ml_dev *dev;
 
@@ -751,12 +716,12 @@ rte_ml_io_quantize(int16_t dev_id, uint16_t model_id, uint16_t nb_batches, void 
 		return -EINVAL;
 	}
 
-	return (*dev->dev_ops->io_quantize)(dev, model_id, nb_batches, dbuffer, qbuffer);
+	return (*dev->dev_ops->io_quantize)(dev, model_id, dbuffer, qbuffer);
 }
 
 int
-rte_ml_io_dequantize(int16_t dev_id, uint16_t model_id, uint16_t nb_batches, void *qbuffer,
-		     void *dbuffer)
+rte_ml_io_dequantize(int16_t dev_id, uint16_t model_id, struct rte_ml_buff_seg **qbuffer,
+		     struct rte_ml_buff_seg **dbuffer)
 {
 	struct rte_ml_dev *dev;
 
@@ -779,7 +744,7 @@ rte_ml_io_dequantize(int16_t dev_id, uint16_t model_id, uint16_t nb_batches, voi
 		return -EINVAL;
 	}
 
-	return (*dev->dev_ops->io_dequantize)(dev, model_id, nb_batches, qbuffer, dbuffer);
+	return (*dev->dev_ops->io_dequantize)(dev, model_id, qbuffer, dbuffer);
 }
 
 /** Initialise rte_ml_op mempool element */

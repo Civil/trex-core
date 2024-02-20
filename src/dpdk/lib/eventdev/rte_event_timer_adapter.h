@@ -310,7 +310,6 @@ struct rte_event_timer_adapter_info {
  *
  * @see RTE_EVENT_TIMER_ADAPTER_F_ADJUST_RES,
  *   struct rte_event_timer_adapter_info
- *
  */
 int
 rte_event_timer_adapter_get_info(
@@ -474,7 +473,6 @@ enum rte_event_timer_state {
  * The generic *rte_event_timer* structure to hold the event timer attributes
  * for arm and cancel operations.
  */
-RTE_STD_C11
 struct rte_event_timer {
 	struct rte_event ev;
 	/**<
@@ -500,7 +498,7 @@ struct rte_event_timer {
 	 * implementation specific values to share between the arm and cancel
 	 * operations.  The application should not modify this field.
 	 */
-	enum rte_event_timer_state state;
+	RTE_ATOMIC(enum rte_event_timer_state) state;
 	/**< State of the event timer. */
 	uint8_t user_meta[];
 	/**< Memory to store user specific metadata.
@@ -540,7 +538,6 @@ struct rte_event_timer_adapter {
 	const struct event_timer_adapter_ops *ops;
 	/**< Functions exported by adapter driver */
 
-	RTE_STD_C11
 	uint8_t allocated : 1;
 	/**< Flag to indicate that this adapter has been allocated */
 } __rte_cache_aligned;
@@ -596,7 +593,6 @@ struct rte_event_timer_adapter {
  *   - EALREADY A timer was encountered that was already armed
  *
  * @see RTE_EVENT_TIMER_ADAPTER_F_PERIODIC
- *
  */
 static inline uint16_t
 rte_event_timer_arm_burst(const struct rte_event_timer_adapter *adapter,
@@ -693,9 +689,6 @@ rte_event_timer_cancel_burst(const struct rte_event_timer_adapter *adapter,
 }
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Get the number of ticks remaining until event timer expiry.
  *
  * @param adapter
