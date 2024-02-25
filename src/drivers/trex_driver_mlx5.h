@@ -24,6 +24,8 @@
 
 #include "trex_driver_base.h"
 
+#include <unordered_map>
+
 
 class CTRexExtendedDriverBaseMlnx5G : public CTRexExtendedDriverBase {
 public:
@@ -70,7 +72,7 @@ private:
         uint16_t total_count;
         bool init;
 
-        uint16_t last_offset;
+        std::unordered_map<std::string, uint16_t> name_to_id;
     };
     xstats_struct m_port_xstats[TREX_MAX_PORTS];
 };
