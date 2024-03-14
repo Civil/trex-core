@@ -3043,10 +3043,10 @@ COLD_FUNC void CGlobalStats::DumpAllPorts(FILE *fd){
 COLD_FUNC void CGlobalStats::Dump(FILE *fd,DumpFormat mode){
     int i;
     int port_to_show=m_num_of_ports;
-    if (port_to_show>4) {
-        port_to_show=4;
-        fprintf (fd," per port - limited to 4   \n");
-    }
+    //if (port_to_show>4) {
+        //port_to_show=4;
+        //fprintf (fd," per port - limited to 4   \n");
+    //}
 
 
     if ( mode== dmpSTANDARD ){

@@ -832,4 +832,8 @@ ixgbe_ethertype_filter_remove(struct ixgbe_filter_info *filter_info,
 	return idx;
 }
 
+#ifdef TREX_PATCH
+int trex_ixgbe_fdir_configure(struct rte_eth_dev *dev);
+#endif
+
 #endif /* _IXGBE_ETHDEV_H_ */

@@ -3835,6 +3835,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 			}
 			if (use_flex) {
 				dev->rx_pkt_burst = iavf_recv_scattered_pkts_vec_flex_rxd;
+#ifdef CC_AVX2_SUPPORT
 				if (use_avx2) {
 					if (check_ret == IAVF_VECTOR_PATH)
 						dev->rx_pkt_burst =
@@ -3843,6 +3844,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 						dev->rx_pkt_burst =
 							iavf_recv_scattered_pkts_vec_avx2_flex_rxd_offload;
 				}
+#endif
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3855,6 +3857,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 #endif
 			} else {
 				dev->rx_pkt_burst = iavf_recv_scattered_pkts_vec;
+#ifdef CC_AVX2_SUPPORT
 				if (use_avx2) {
 					if (check_ret == IAVF_VECTOR_PATH)
 						dev->rx_pkt_burst =
@@ -3863,6 +3866,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 						dev->rx_pkt_burst =
 							iavf_recv_scattered_pkts_vec_avx2_offload;
 				}
+#endif
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3901,6 +3905,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 			}
 			if (use_flex) {
 				dev->rx_pkt_burst = iavf_recv_pkts_vec_flex_rxd;
+#ifdef CC_AVX2_SUPPORT
 				if (use_avx2) {
 					if (check_ret == IAVF_VECTOR_PATH)
 						dev->rx_pkt_burst =
@@ -3909,6 +3914,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 						dev->rx_pkt_burst =
 							iavf_recv_pkts_vec_avx2_flex_rxd_offload;
 				}
+#endif
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -3921,6 +3927,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 #endif
 			} else {
 				dev->rx_pkt_burst = iavf_recv_pkts_vec;
+#ifdef CC_AVX2_SUPPORT
 				if (use_avx2) {
 					if (check_ret == IAVF_VECTOR_PATH)
 						dev->rx_pkt_burst =
@@ -3929,6 +3936,7 @@ iavf_set_rx_function(struct rte_eth_dev *dev)
 						dev->rx_pkt_burst =
 							iavf_recv_pkts_vec_avx2_offload;
 				}
+#endif
 #ifdef CC_AVX512_SUPPORT
 				if (use_avx512) {
 					if (check_ret == IAVF_VECTOR_PATH)
@@ -4038,6 +4046,7 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 				    dev->data->port_id);
 			dev->tx_pkt_burst = iavf_xmit_pkts_vec;
 		}
+#ifdef CC_AVX2_SUPPORT
 		if (use_avx2) {
 			if (check_ret == IAVF_VECTOR_PATH) {
 				dev->tx_pkt_burst = iavf_xmit_pkts_vec_avx2;
@@ -4054,6 +4063,7 @@ iavf_set_tx_function(struct rte_eth_dev *dev)
 					    dev->data->port_id);
 			}
 		}
+#endif
 #ifdef CC_AVX512_SUPPORT
 		if (use_avx512) {
 			if (check_ret == IAVF_VECTOR_PATH) {

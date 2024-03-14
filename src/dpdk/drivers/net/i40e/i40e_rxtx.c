@@ -3657,7 +3657,7 @@ i40e_set_default_pctype_table(struct rte_eth_dev *dev)
 	}
 }
 
-#ifndef RTE_ARCH_X86
+#if !defined(RTE_ARCH_X86) || !defined(CC_AVX2_SUPPORT)
 uint16_t
 i40e_recv_pkts_vec_avx2(void __rte_unused *rx_queue,
 			struct rte_mbuf __rte_unused **rx_pkts,

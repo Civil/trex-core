@@ -170,21 +170,22 @@ bool CTRexExtendedDriverBaseMlnx5G::get_extended_stats(CPhyEthIF * _if, CPhyEthI
     if ( !xstats_struct->init ) {
         xstats_struct->init = true;
     } else {
-        uint64_t packet_diff = opackets - prev_stats->opackets;
-        stats->opackets = opackets;
-        stats->obytes = obytes +
+        uint64_t packet_diff;
+        packet_diff = opackets - prev_stats->opackets;
+        stats->opackets += packet_diff;
+        stats->obytes += obytes - prev_stats->obytes +
                          packet_diff * 4; // add FCS
 
         packet_diff = ipackets - prev_stats->ipackets;
-        stats->ipackets = ipackets;
-        stats->ibytes = ibytes +
+        stats->ipackets += packet_diff;
+        stats->ibytes += ibytes - prev_stats->ibytes +
                          packet_diff * 4; // add FCS
 
-        stats->ierrors = imissed +
-                          rx_nombuf +
-                          ierrors;
-        stats->rx_nombuf = rx_nombuf;
-        stats->oerrors = oerrors;
+        stats->ierrors += imissed - prev_stats->imissed +
+                          rx_nombuf - prev_stats->rx_nombuf +
+                          ierrors - prev_stats->ierrors;
+        stats->rx_nombuf += rx_nombuf - prev_stats->rx_nombuf;
+        stats->oerrors += oerrors - prev_stats->oerrors;
     }
 
     prev_stats->ipackets  = ipackets;

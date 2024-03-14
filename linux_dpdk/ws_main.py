@@ -139,6 +139,7 @@ class SrcGroups:
 
 
 def options(opt):
+    opt.load('clang_compilation_database', tooldir='tools')
     opt.load('compiler_cxx')
     opt.load('compiler_c')
     opt.add_option('--pkg-dir', '--pkg_dir', dest='pkg_dir', default=False, action='store', help="Destination folder for 'pkg' option.")
@@ -814,7 +815,7 @@ def check_version_glibc(lib_so):
 
 
 def configure(conf):
-
+    conf.load('clang_compilation_database', tooldir='tools')
     conf.find_program('strings')
     so = ['/usr/lib/x86_64-linux-gnu/libstdc++.so.6','/usr/lib64/libstdc++.so.6']
     our_so =  '../scripts/so/x86_64/libstdc++.so.6'
@@ -918,9 +919,12 @@ def search_in_paths(paths):
 
 
 def load_compiler(conf):
-    if 'clang' in conf.environ.get('CXX', ''):
+    if 'clang' in conf.environ.get('CXX', '') or 'icpx' in conf.environ.get('CXX', ''):
         conf.load('clang++')
         conf.load('clang')
+    if 'oneapi' in conf.environ.get('CXX', ''):
+        conf.load('icpx')
+        conf.load('icx')
     else:
         conf.load('g++')
         conf.load('gcc')
@@ -1439,16 +1443,16 @@ dpdk_src_x86_64 = SrcGroup(dir='src/dpdk/',
                  'drivers/net/bonding/rte_eth_bond_alb.c',
 
                  # avx2/avx512
-                 'drivers/net/bnxt/bnxt_rxtx_vec_avx2.c',
+                 #'drivers/net/bnxt/bnxt_rxtx_vec_avx2.c',
 
-                 'drivers/net/ice/ice_rxtx_vec_avx2.c',
-                 'drivers/net/ice/ice_rxtx_vec_avx512.c',
+                 #'drivers/net/ice/ice_rxtx_vec_avx2.c',
+                 #'drivers/net/ice/ice_rxtx_vec_avx512.c',
 
-                 'drivers/net/iavf/iavf_rxtx_vec_avx2.c',
-                 'drivers/net/iavf/iavf_rxtx_vec_avx512.c',
+                 #'drivers/net/iavf/iavf_rxtx_vec_avx2.c',
+                 #'drivers/net/iavf/iavf_rxtx_vec_avx512.c',
 
-                 'drivers/net/i40e/i40e_rxtx_vec_avx2.c',
-                 'drivers/net/i40e/i40e_rxtx_vec_avx512.c',
+                 #'drivers/net/i40e/i40e_rxtx_vec_avx2.c',
+                 #'drivers/net/i40e/i40e_rxtx_vec_avx512.c',
 
                  'drivers/net/ixgbe/ixgbe_recycle_mbufs_vec_common.c',
                  ])
@@ -2142,7 +2146,7 @@ if march == 'x86_64':
                     '-DABI_VERSION="22.1"',
                     '-DALLOW_EXPERIMENTAL_API',
                     '-DSUPPORT_CFA_HW_ALL=1',
-
+                    '-mno-avx2', '-mno-avx512f', '-mno-avx512bw', '-mno-avx512vl', '-mno-avx512dq',
                    ]
 
     common_flags_avx512 = common_flags_new + [
@@ -2152,7 +2156,9 @@ if march == 'x86_64':
                     '-DRTE_MACHINE_CPUFLAG_AVX2',
                     '-DRTE_MACHINE_CPUFLAG_AVX512F',
                     '-DRTE_MACHINE_CPUFLAG_AVX512BW',
-                    '-mavx2', '-mavx512f', '-mavx512bw',
+                    '-DRTE_MACHINE_CPUFLAG_AVX512VL',
+                    '-DRTE_MACHINE_CPUFLAG_AVX512DQ',
+                    '-mavx2', '-mavx512f', '-mavx512bw', '-mavx512vl', '-mavx512dq',
                     ]
 
     common_flags_old = common_flags + [
@@ -2542,7 +2548,8 @@ class build_option:
         #    flags = copy.copy(common_flags_old)
         #else:
         #    flags = copy.copy(common_flags_new)
-        flags = copy.copy(common_flags_avx512)
+        #flags = copy.copy(common_flags_avx512)
+        flags = copy.copy(common_flags_new)
 
         if self.isIntelPlatform():
             if self.is64Platform():
