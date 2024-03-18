@@ -139,7 +139,7 @@ class SrcGroups:
 
 
 def options(opt):
-    opt.load('clang_compilation_database', tooldir='tools')
+    #opt.load('clang_compilation_database', tooldir='tools')
     opt.load('compiler_cxx')
     opt.load('compiler_c')
     opt.add_option('--pkg-dir', '--pkg_dir', dest='pkg_dir', default=False, action='store', help="Destination folder for 'pkg' option.")
@@ -815,7 +815,7 @@ def check_version_glibc(lib_so):
 
 
 def configure(conf):
-    conf.load('clang_compilation_database', tooldir='tools')
+    #conf.load('clang_compilation_database', tooldir='tools')
     conf.find_program('strings')
     so = ['/usr/lib/x86_64-linux-gnu/libstdc++.so.6','/usr/lib64/libstdc++.so.6']
     our_so =  '../scripts/so/x86_64/libstdc++.so.6'
