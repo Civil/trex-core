@@ -308,7 +308,9 @@
 
 #define RTE_MAX_ETHPORTS 32
 
+#ifndef RTE_MAX_LCORE
 #define RTE_MAX_LCORE 128
+#endif
 
 #define RTE_MAX_MEM_MB 524288
 

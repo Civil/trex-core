@@ -156,6 +156,9 @@ def options(opt):
     opt.add_option('--private', dest='private', action = 'store_true', help = "private publish, do not replace latest/be_latest image with this image")
     opt.add_option('--tap', dest='tap', default=False, action = 'store_true', help = "Add tap dpdk driver for Azure use-cases")
     opt.add_option('--no-ofed-check', dest='no_ofed_check', default=False, action = 'store_true', help = "Skip ofed check in case of Azure")
+    opt.add_option('--with-avx2', dest='avx2', default=False, action = 'store_true', help = 'Enable AVX2 support')
+    opt.add_option('--with-avx512', dest='avx512', default=False, action = 'store_true', help = 'Enable AVX512 (F, BW, VL, DQ, CD) support')
+    opt.add_option('--max-lcores', dest='lcores', default=256, action = 'store', help= 'Change max amount of cores supported by t-rex')
 
 
     co = opt.option_groups['configure options']
@@ -927,6 +930,13 @@ def configure(conf):
             
     conf.env.NO_MLX = no_mlx
     conf.env.TAP = conf.options.tap
+    conf.env.AVX2 = conf.options.avx2
+    conf.env.AVX512 = conf.options.avx512
+    conf.env.LCORES = conf.options.lcores
+    if conf.env.AVX2:
+        Logs.pprint('GREEN', 'Info: using avx2.')
+    if conf.env.AVX512:
+        Logs.pprint('GREEN', 'Info: using avx512.')
 
     if no_mlx != 'all':
         if conf.options.no_ofed_check:
@@ -1504,21 +1514,33 @@ dpdk_src_x86_64 = SrcGroup(dir='src/dpdk/',
                  'drivers/net/bonding/rte_eth_bond_args.c',
                  'drivers/net/bonding/rte_eth_bond_8023ad.c',
                  'drivers/net/bonding/rte_eth_bond_alb.c',
-
-                 # avx2/avx512
-                 #'drivers/net/bnxt/bnxt_rxtx_vec_avx2.c',
-
-                 #'drivers/net/ice/ice_rxtx_vec_avx2.c',
-                 #'drivers/net/ice/ice_rxtx_vec_avx512.c',
-
-                 #'drivers/net/iavf/iavf_rxtx_vec_avx2.c',
-                 #'drivers/net/iavf/iavf_rxtx_vec_avx512.c',
-
-                 #'drivers/net/i40e/i40e_rxtx_vec_avx2.c',
-                 #'drivers/net/i40e/i40e_rxtx_vec_avx512.c',
-
-                 #'drivers/net/ixgbe/ixgbe_recycle_mbufs_vec_common.c',
                  ])
+
+dpdk_src_x86_64_avx2 = SrcGroup(dir='src/dpdk/',
+        src_list=[
+                 # avx2
+                 'drivers/net/bnxt/bnxt_rxtx_vec_avx2.c',
+
+                 'drivers/net/ice/ice_rxtx_vec_avx2.c',
+
+                 'drivers/net/iavf/iavf_rxtx_vec_avx2.c',
+
+                 'drivers/net/i40e/i40e_rxtx_vec_avx2.c',
+                 ])
+
+dpdk_src_x86_64_avx512 = SrcGroup(dir='src/dpdk/',
+        src_list=[
+                 # avx512
+                 'lib/net/net_crc_avx512.c', 
+
+                 'drivers/net/ice/ice_rxtx_vec_avx512.c',
+
+                 'drivers/net/iavf/iavf_rxtx_vec_avx512.c',
+
+                 'drivers/net/i40e/i40e_rxtx_vec_avx512.c',
+
+                 ])
+
 
 dpdk_src_x86_64_ext = SrcGroup(dir='src',
         src_list=['drivers/trex_ixgbe_fdir.c',
@@ -2192,92 +2214,157 @@ common_flags = ['-DWIN_UCODE_SIM',
                 #'-D__TREX_RPC_DEBUG__', # debug RPC dialogue
                ]
 
+avx512_to_rte = {
+        'avx512f': 'AVX512F',
+        'avx512dq': 'AVX512DQ',
+        'avx512ifma': 'AVX512IFMA',
+        'avx512cd': 'AVX512CD',
+        'avx512bw': 'AVX512BW',
+        'avx512vl': 'AVX512VL',
+        'avx512vbmi': 'AVX512VBMI',
+        'avx512_vbmi2': 'AVX512VBMI2',
+        'avx512_vnni': 'AVX512VNNI',
+        'avx512_bitalg': 'AVX512BITALG',
+        'avx512_vpopcntdq': 'AVX512VPOPCNTDQ',
+}
 
-if march == 'x86_64':
-    common_flags_new = common_flags + [
-                    '-march=native',
-                    '-mssse3', '-msse4.1', '-mpclmul', '-mavx', '-mrtm',
-                    '-DRTE_MACHINE_CPUFLAG_SSE',
-                    '-DRTE_MACHINE_CPUFLAG_SSE2',
-                    '-DRTE_MACHINE_CPUFLAG_SSE3',
-                    '-DRTE_MACHINE_CPUFLAG_SSSE3',
-                    '-DRTE_MACHINE_CPUFLAG_SSE4_1',
-                    '-DRTE_MACHINE_CPUFLAG_SSE4_2',
-                    '-DRTE_MACHINE_CPUFLAG_AES',
-                    '-DRTE_MACHINE_CPUFLAG_PCLMULQDQ',
-                    '-DRTE_MACHINE_CPUFLAG_AVX',
-                    #'-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2,RTE_CPUFLAG_AES,RTE_CPUFLAG_PCLMULQDQ,RTE_CPUFLAG_AVX',
-                    '-DTREX_USE_BPFJIT',
-                    '-D_GNU_SOURCE',
-                    '-DALLOW_INTERNAL_API',
-                    '-DABI_VERSION="22.1"',
-                    '-DALLOW_EXPERIMENTAL_API',
-                    '-DSUPPORT_CFA_HW_ALL=1',
 
-                   ]
+def flags_support_x86_64():
+    res = dict()
+    if sys.platform.startswith('linux'):
+        cpuinfo = open('/proc/cpuinfo')
+        for line in cpuinfo:
+            if not line.startswith('flags'):
+                continue
+            flags = line.strip().split(' ')
 
-    common_flags_old = common_flags + [
-                      '-march=corei7',
-                      '-DUCS_210',
-                      '-mtune=generic',
-                      '-DRTE_MACHINE_CPUFLAG_SSE',
-                      '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE',
-                      '-DTREX_USE_BPFJIT',
-                      '-DALLOW_INTERNAL_API',
-                      '-DALLOW_EXPERIMENTAL_API',
-                      '-DABI_VERSION="22.1"',
-                      '-DSUPPORT_CFA_HW_ALL=1',
+            for flag in flags:
+                if flag in avx512_to_rte:
+                    res[flag] = avx512_to_rte[flag]
 
-                      ]
+            break
+        cpuinfo.close()
+    return res
+        
 
-elif march == 'aarch64':
-    common_flags_new = common_flags + [
-                       '-march=native',
-                       '-mtune=cortex-a72',
-                       '-DRTE_ARCH_64',
-                       '-DRTE_FORCE_INTRINSICS',
-                       '-DRTE_MACHINE_NEON',
-                       '-DRTE_MACHINE_EVTSTRM',
-                       '-DRTE_MACHINE_CRC32',
-                       '-DRTE_MACHINE_AES',
-                       '-DRTE_MACHINE_PMULL',
-                       '-DRTE_MACHINE_SHA1',
-                       '-DRTE_MACHINE_SHA2',
-                       '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_EVTSTRM,RTE_CPUFLAG_NEON,RTE_CPUFLAG_CRC32,RTE_CPUFLAG_AES,RTE_CPUFLAG_PMULL,RTE_CPUFLAG_SHA1,RTE_CPUFLAG_SHA2',
+def get_arch_cflags(bld):
+    if not isinstance(bld.env.LCORES, list):
+        common_flags.append(f'-DRTE_MAX_LCORE={bld.env.LCORES}')
+    if march == 'x86_64':
+        cpu_flags = flags_support_x86_64()
+        common_flags_new = common_flags + [
+                        '-march=native',
+                        '-mssse3', '-msse4.1', '-mpclmul', '-mavx', '-mrtm',
+                        '-DRTE_MACHINE_CPUFLAG_SSE',
+                        '-DRTE_MACHINE_CPUFLAG_SSE2',
+                        '-DRTE_MACHINE_CPUFLAG_SSE3',
+                        '-DRTE_MACHINE_CPUFLAG_SSSE3',
+                        '-DRTE_MACHINE_CPUFLAG_SSE4_1',
+                        '-DRTE_MACHINE_CPUFLAG_SSE4_2',
+                        '-DRTE_MACHINE_CPUFLAG_AES',
+                        '-DRTE_MACHINE_CPUFLAG_PCLMULQDQ',
+                        '-DRTE_MACHINE_CPUFLAG_AVX',
+                        #'-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2,RTE_CPUFLAG_AES,RTE_CPUFLAG_PCLMULQDQ,RTE_CPUFLAG_AVX',
+                        '-DTREX_USE_BPFJIT',
+                        '-D_GNU_SOURCE',
+                        '-DALLOW_INTERNAL_API',
+                        '-DABI_VERSION="22.1"',
+                        '-DALLOW_EXPERIMENTAL_API',
+                        '-DSUPPORT_CFA_HW_ALL=1',
                        ]
-    common_flags_old = common_flags + [
-                       '-march=native',
-                       '-mtune=cortex-a53',
-                       '-DRTE_ARCH_64',
-                       '-DRTE_FORCE_INTRINSICS',
-                       '-DRTE_MACHINE_NEON',
-                       '-DRTE_MACHINE_CRC32',
-                       '-DRTE_MACHINE_AES',
-                       '-DRTE_MACHINE_PMULL',
-                       '-DRTE_MACHINE_SHA1',
-                       '-DRTE_MACHINE_SHA2',
-                       '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_NEON,RTE_CPUFLAG_CRC32,RTE_CPUFLAG_AES,RTE_CPUFLAG_PMULL,RTE_CPUFLAG_SHA1,RTE_CPUFLAG_SHA2',
-                       ]
+        if bld.env.AVX2 or bld.env.AVX512:
+            features = "-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2,RTE_CPUFLAG_AES,RTE_CPUFLAG_AVX,RTE_CPUFLAG_PCLMULQDQ,RTE_CPUFLAG_RDRAND,RTE_CPUFLAG_RDSEED,RTE_CPUFLAG_VPCLMULQDQ,RTE_CPUFLAG_AVX2"
+            common_flags_new = common_flags_new + [
+                    '-DTREX_VANILLA_VECTORIZATION',
+                    '-DCC_AVX2_SUPPORT',
+                    '-DRTE_MACHINE_CPUFLAG_AVX2',
+                    '-mavx2',
+            ]
+            if bld.env.AVX512:
+                features = features + ",RTE_CPUFLAG_AVX512F,RTE_CPUFLAG_AVX512BW,RTE_CPUFLAG_AVX512VL,RTE_CPUFLAG_AVX512DQ,RTE_CPUFLAG_AVX512CD"
+                common_flags_new = common_flags_new + [
+                        '-DCC_AVX512_SUPPORT',
+                        '-DRTE_MEMCPY_AVX512',
+                ]
+                for flag, define in cpu_flags.items():
+                    if flag == 'avx512vl':
+                        features = features + ",RTE_CPUFLAG_VPCLMULQDQ,RTE_CPUFLAG_AVX512VL"
+                        common_flags_new.extend(
+                                ['-DCC_X86_64_AVX512_VPCLMULQDQ_SUPPORT',
+                                 '-DRTE_MACHINE_CPUFLAG_AVX512VL',
+                                 '-DRTE_MACHINE_CPUFLAG_VPCLMULQDQ',
+                                 '-mavx512vl',
+                                 '-mvpclmulqdq',
+                        ])
+                        continue
+                    features = features + f",RTE_CPUFLAG_{define}"
+                    common_flags_new.append(f'-DRTE_MACHINE_CPUFLAG_{define}')
+            common_flags_new.append(features)
 
-elif march == 'ppc64le':
-    common_flags_new = common_flags + [
-                       '-mcpu=power9',
-                       '-DRTE_ARCH_64',
-                       '-DRTE_MACHINE_CPUFLAG_PPC64',
-                       '-DRTE_MACHINE_CPUFLAG_ALTIVEC',
-                       '-DRTE_MACHINE_CPUFLAG_VSX',
-                       '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_PPC64,RTE_CPUFLAG_ALTIVEC,RTE_CPUFLAG_VSX',
-                       '-DTREX_USE_BPFJIT',
-                       ]
-    common_flags_old = common_flags + [
-                       '-mcpu=power9',
-                       '-DRTE_ARCH_64',
-                       '-DRTE_MACHINE_CPUFLAG_PPC64',
-                       '-DRTE_MACHINE_CPUFLAG_ALTIVEC',
-                       '-DRTE_MACHINE_CPUFLAG_VSX',
-                       '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_PPC64,RTE_CPUFLAG_ALTIVEC,RTE_CPUFLAG_VSX',
-                       '-DTREX_USE_BPFJIT',
-                       ]
+        common_flags_old = common_flags + [
+                          '-march=corei7',
+                          '-DUCS_210',
+                          '-mtune=generic',
+                          '-DRTE_MACHINE_CPUFLAG_SSE',
+                          '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE',
+                          '-DTREX_USE_BPFJIT',
+                          '-DALLOW_INTERNAL_API',
+                          '-DALLOW_EXPERIMENTAL_API',
+                          '-DABI_VERSION="22.1"',
+                          '-DSUPPORT_CFA_HW_ALL=1',
+
+                          ]
+        common_flags_old = common_flags_new
+
+    elif march == 'aarch64':
+        common_flags_new = common_flags + [
+                           '-march=native',
+                           '-mtune=cortex-a72',
+                           '-DRTE_ARCH_64',
+                           '-DRTE_FORCE_INTRINSICS',
+                           '-DRTE_MACHINE_NEON',
+                           '-DRTE_MACHINE_EVTSTRM',
+                           '-DRTE_MACHINE_CRC32',
+                           '-DRTE_MACHINE_AES',
+                           '-DRTE_MACHINE_PMULL',
+                           '-DRTE_MACHINE_SHA1',
+                           '-DRTE_MACHINE_SHA2',
+                           '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_EVTSTRM,RTE_CPUFLAG_NEON,RTE_CPUFLAG_CRC32,RTE_CPUFLAG_AES,RTE_CPUFLAG_PMULL,RTE_CPUFLAG_SHA1,RTE_CPUFLAG_SHA2',
+                           ]
+        common_flags_old = common_flags + [
+                           '-march=native',
+                           '-mtune=cortex-a53',
+                           '-DRTE_ARCH_64',
+                           '-DRTE_FORCE_INTRINSICS',
+                           '-DRTE_MACHINE_NEON',
+                           '-DRTE_MACHINE_CRC32',
+                           '-DRTE_MACHINE_AES',
+                           '-DRTE_MACHINE_PMULL',
+                           '-DRTE_MACHINE_SHA1',
+                           '-DRTE_MACHINE_SHA2',
+                           '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_NEON,RTE_CPUFLAG_CRC32,RTE_CPUFLAG_AES,RTE_CPUFLAG_PMULL,RTE_CPUFLAG_SHA1,RTE_CPUFLAG_SHA2',
+                           ]
+
+    elif march == 'ppc64le':
+        common_flags_new = common_flags + [
+                           '-mcpu=power9',
+                           '-DRTE_ARCH_64',
+                           '-DRTE_MACHINE_CPUFLAG_PPC64',
+                           '-DRTE_MACHINE_CPUFLAG_ALTIVEC',
+                           '-DRTE_MACHINE_CPUFLAG_VSX',
+                           '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_PPC64,RTE_CPUFLAG_ALTIVEC,RTE_CPUFLAG_VSX',
+                           '-DTREX_USE_BPFJIT',
+                           ]
+        common_flags_old = common_flags + [
+                           '-mcpu=power9',
+                           '-DRTE_ARCH_64',
+                           '-DRTE_MACHINE_CPUFLAG_PPC64',
+                           '-DRTE_MACHINE_CPUFLAG_ALTIVEC',
+                           '-DRTE_MACHINE_CPUFLAG_VSX',
+                           '-DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_PPC64,RTE_CPUFLAG_ALTIVEC,RTE_CPUFLAG_VSX',
+                           '-DTREX_USE_BPFJIT',
+                           ]
+    return (common_flags_new, common_flags_old)
 
 dpdk_includes_path_x86_64 ='''
                         ../src/dpdk/lib/eal/x86/include/
@@ -2598,7 +2685,8 @@ class build_option:
             flags += ['-UNDEBUG']
         return (flags)
 
-    def get_common_flags (self):
+    def get_common_flags (self, bld):
+        common_flags_new, common_flags_old = get_arch_cflags(bld)
         if self.isPIE():
             flags = copy.copy(common_flags_old)
         else:
@@ -2617,8 +2705,8 @@ class build_option:
 
         return (flags)
 
-    def get_cxx_flags (self, is_sanitized):
-        flags = self.get_common_flags()
+    def get_cxx_flags (self, bld, is_sanitized):
+        flags = self.get_common_flags(bld)
 
         # support c++ 2011
         flags += ['-std=c++0x']
@@ -2643,9 +2731,9 @@ class build_option:
         return (flags)
 
         
-    def get_c_flags (self, is_sanitized):
+    def get_c_flags (self, bld, is_sanitized):
         
-        flags = self.get_common_flags()
+        flags = self.get_common_flags(bld)
         
         if  self.isRelease () :
             flags += ['-DNDEBUG']
@@ -2664,7 +2752,7 @@ class build_option:
         return (flags)
 
         
-    def get_link_flags(self, is_sanitized):
+    def get_link_flags(self, bld, is_sanitized):
         base_flags = ['-rdynamic']
         if self.is64Platform() and self.isIntelPlatform():
             base_flags += ['-m64']
@@ -2706,9 +2794,9 @@ def build_prog (bld, build_obj):
     
     build_obj.set_env(bld.env.CXX)
 
-    cflags    = build_obj.get_c_flags(bld.env.SANITIZED)
-    cxxflags  = build_obj.get_cxx_flags(bld.env.SANITIZED)
-    linkflags = build_obj.get_link_flags(bld.env.SANITIZED)
+    cflags    = build_obj.get_c_flags(bld, bld.env.SANITIZED)
+    cxxflags  = build_obj.get_cxx_flags(bld, bld.env.SANITIZED)
+    linkflags = build_obj.get_link_flags(bld, bld.env.SANITIZED)
 
     lib_ext = []
     if bld.env.DPDK_NEW_MEMORY == True:
@@ -2722,12 +2810,19 @@ def build_prog (bld, build_obj):
         linkflags += ['-larchive']
 
     if march == 'x86_64':
-        bp_dpdk = SrcGroups([
+        src_groups = [
                     dpdk_src,
                     i40e_dpdk_src,
                     dpdk_src_x86_64,
                     dpdk_src_x86_64_ext
-                    ])
+                    ]
+
+        if bld.env.AVX2 or bld.env.AVX512:
+            src_groups.append(dpdk_src_x86_64_avx2)
+        if bld.env.AVX512:
+            src_groups.append(dpdk_src_x86_64_avx512)
+
+        bp_dpdk = SrcGroups(src_groups)
         
         if bld.env.TAP:
             bp_dpdk.list_group.append(dpdk_src_x86_64_tap)
