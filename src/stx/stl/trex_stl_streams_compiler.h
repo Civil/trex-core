@@ -83,7 +83,7 @@ public:
             return false;
         }
         /* highest bit pushed to left and then -1 will give all the other bits on */
-        return ( (dp_core_mask & ( (1 << dp_core_count) - 1 ) ) != 0);
+        return ( (dp_core_mask & ( ( (uint64_t)1 << dp_core_count) - 1 ) ) != 0);
     }
 
 private:
