@@ -1725,7 +1725,7 @@ int bnxt_flush_rx_cmp(struct bnxt_cp_ring_info *cpr)
 	return 0;
 }
 
-#ifdef TREX_PATCH
+#if defined(TREX_PATCH) && !defined(RTE_MACHINE_CPUFLAG_AVX2)
 
 uint16_t bnxt_crx_pkts_vec_avx2(void *rx_queue, struct rte_mbuf **rx_pkts,
 				uint16_t nb_pkts)

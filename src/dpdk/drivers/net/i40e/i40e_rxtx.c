@@ -3767,6 +3767,7 @@ i40e_set_default_pctype_table(struct rte_eth_dev *dev)
 	}
 }
 
+#if !defined(RTE_MACHINE_CPUFLAG_AVX2)
 uint16_t
 i40e_recv_pkts_vec_avx2(void __rte_unused *rx_queue,
 			struct rte_mbuf __rte_unused **rx_pkts,
@@ -3790,3 +3791,4 @@ i40e_xmit_pkts_vec_avx2(void __rte_unused * tx_queue,
 {
 	return 0;
 }
+#endif
