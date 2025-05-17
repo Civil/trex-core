@@ -169,7 +169,10 @@ void CTcpDataAssocTranslation::dump(FILE *fd) {
 CTcpServerInfo* CTcpDataAssocTranslation::insert_vec(const CTcpDataAssocParams &params, CEmulAppProgram *prog, CTcpTuneables *tune
                                           , uint32_t temp_idx) {
     CTcpDataAssocTransHelp trans_help(params, prog, tune, temp_idx);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
     m_vec.push_back(trans_help);
+#pragma GCC diagnostic pop
     return &m_vec.back().m_server_info;
 }
 
