@@ -60,6 +60,7 @@ gcc_flags = ['-Wall',
              '-Wno-literal-suffix',
              '-Wno-sign-compare',
              '-Wno-strict-aliasing',
+             '-Wno-packed-not-aligned',
              '-mrtm',
              '-Wno-address-of-packed-member']
 
@@ -919,6 +920,9 @@ def search_in_paths(paths):
 
 def load_compiler(conf):
     if 'clang' in conf.environ.get('CXX', ''):
+        conf.load('clang++')
+        conf.load('clang')
+    elif 'icpx' in conf.environ.get('CXX', ''):
         conf.load('clang++')
         conf.load('clang')
     else:
@@ -2065,7 +2069,7 @@ common_flags = ['-DWIN_UCODE_SIM',
                 '-DLINUX',
                 '-g',
                 '-Wno-format',
-                '-Wno-packed-not-aligned',
+                '-Wno-implicit-function-declaration',
                 '-Wno-missing-field-initializers',
                 '-Wno-deprecated-declarations',
                 '-Wno-error=uninitialized',
@@ -2416,9 +2420,12 @@ class build_option:
         self.env = env
 
     def is_clang(self):
-        if self.env: 
+        if self.env:
             if 'clang' in self.env[0]:
                 return True
+            if 'icpx' in self.env[0]:
+                return True
+        print("not clang")
         return False        
       
     def __str__(self):
